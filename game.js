@@ -14,7 +14,7 @@ const dist2 = (ax, ay, bx, by) => { const dx = ax - bx, dy = ay - by; return dx 
 const pick = (arr) => arr[(Math.random() * arr.length) | 0];
 
 /* single source of truth for the game version — shown on the menu badge */
-const GAME_VERSION = '2.8';
+const GAME_VERSION = '2.9';
 
 /* ---------------- config ---------------- */
 const CFG = {
@@ -26,13 +26,20 @@ const CFG = {
   camZoom: 0.85,                // zoomed out slightly
   // ---- dev-tunable pacing params (functions below derive from these) ----
   spawnBase: 1.30,              // spawn interval at t=0 (s)
-  spawnDecay: 0.0032,           // interval shrink per second
+  spawnDecay: 0.0028,           // interval shrink per second
   spawnMin: 0.38,               // fastest spawn interval (s)
-  batchEvery: 80,               // +1 enemy per batch every N seconds
-  hpRate: 100,                  // enemy HP doubles every N seconds
+  batchEvery: 95,               // +1 enemy per batch every N seconds
+  hpRate: 130,                  // enemy HP doubles every N seconds
   spdRate: 280,                 // enemy speed ramps over N seconds
   spdCap: 0.45,                 // max speed growth (+45%)
   dmgRate: 360,                 // enemy damage doubles every N seconds
+  pickDR: 0.5,                  // diminishing returns: repeat in-run pick grants bonus * pickDR^n
+  // ---- hard mode (void plus): explicit per-loop scaling for loops >= 1 ----
+  loopSpawnInt: 0.55,           // spawn interval (s) during loops >= 1
+  loopSpawnBatch: 2,            // batch = loopSpawnBatch + loop during loops >= 1
+  loopFoeHp: 1.9,               // enemy HP x per loop
+  loopFoeDmg: 1.3,              // enemy damage x per loop
+  loopBossHp: 1.5,              // boss HP x per loop
   xpBase: 7, xpPow: 1.35,       // xpNeed = xpBase * lvl^xpPow
   eliteEvery: 42,               // seconds between elites
   firstElite: 50,               // first elite at this time (s)
@@ -49,7 +56,8 @@ CFG.spdMul = (t) => 1 + Math.min(CFG.spdCap, t / CFG.spdRate);
 CFG.dmgMul = (t) => 1 + t / CFG.dmgRate;
 // numeric params the dev menu can reset
 const DEVPARAMS = ['maxEnemies', 'spawnBase', 'spawnDecay', 'spawnMin', 'batchEvery',
-  'hpRate', 'spdRate', 'spdCap', 'dmgRate', 'xpBase', 'xpPow',
+  'hpRate', 'spdRate', 'spdCap', 'dmgRate', 'xpBase', 'xpPow', 'pickDR',
+  'loopSpawnInt', 'loopSpawnBatch', 'loopFoeHp', 'loopFoeDmg', 'loopBossHp',
   'eliteEvery', 'firstElite', 'bossEvery', 'firstBoss', 'eliteNukeCh', 'eliteHealCh'];
 const CFG_DEFAULTS = {};
 DEVPARAMS.forEach((k) => { CFG_DEFAULTS[k] = CFG[k]; });
@@ -64,6 +72,7 @@ const STORY = {
   voidBossFirst: 20,     // first void-boss delay after rupture (s)
   voidBossEvery: 75,     // seconds between void bosses
   ruptureHold: 8,        // spawn pause after the rupture (s)
+  warRampT: 45,          // voidwar spawn pressure ramps 55% -> 100% over this many seconds
   smallW: 1200, smallH: 800,   // calm-phase arena (fully visible)
   bigW: 2200, bigH: 1500,      // post-rupture arena
 };
@@ -758,7 +767,8 @@ function spawnRing(margin) {
 function spawnEnemy(type, x, y, elite, voidT) {
   const base = ETYPES[type];
   const t = G.time;
-  const hpM = CFG.hpMul(t) * (elite ? 5 : 1) * (voidT ? 1.6 : 1);
+  const loop = (G.story && G.story.phase !== 'off') ? (G.story.loop | 0) : 0;
+  const hpM = CFG.hpMul(t) * (elite ? 5 : 1) * (voidT ? 1.45 : 1) * Math.pow(CFG.loopFoeHp, loop);
   const pos = (x === undefined) ? spawnRing() : { x, y };
   const e = {
     type, elite: !!elite, voidT: !!voidT,
@@ -766,7 +776,7 @@ function spawnEnemy(type, x, y, elite, voidT) {
     vx: 0, vy: 0,
     hp: base.hp * hpM, maxhp: base.hp * hpM,
     spd: base.spd * CFG.spdMul(t) * rand(0.9, 1.1) * (elite ? 0.9 : 1) * (voidT ? 1.08 : 1),
-    dmg: base.dmg * CFG.dmgMul(t) * (elite ? 1.5 : 1),
+    dmg: base.dmg * CFG.dmgMul(t) * (elite ? 1.5 : 1) * Math.pow(CFG.loopFoeDmg, loop),
     r: base.r * (elite ? 1.55 : 1) * S + (elite ? 6 : 0),
     score: base.score * (elite ? 5 : 1) * (voidT ? 2 : 1),
     xp: base.xp * (elite ? 5 : 1),
@@ -808,10 +818,19 @@ function updateSpawns(dt) {
   const classicSpawns = !inStory || (voidwar && st.spawnMode === 'classic');
   const held = !!st && st.spawnHold > 0;
   if (held) st.spawnHold -= dt;
+  // voidwar opening ramp clock (55% spawn pressure easing to full)
+  if (voidwar && !held) st.warT = (st.warT || 0) + dt;
   G.spawnT -= dt;
   if (G.spawnT <= 0 && G.enemies.length < CFG.maxEnemies && !held) {
-    G.spawnT = CFG.spawnInterval(t);
-    const batch = Math.min(CFG.batchSize(t), CFG.maxEnemies - G.enemies.length);
+    const loop = inStory ? (st.loop | 0) : 0;
+    // hard mode: loops >= 1 run a fixed, explicitly tuned cadence (fewer but meaner)
+    G.spawnT = loop >= 1 ? CFG.loopSpawnInt : CFG.spawnInterval(t);
+    let batch = Math.min(loop >= 1 ? CFG.loopSpawnBatch + loop : CFG.batchSize(t),
+      CFG.maxEnemies - G.enemies.length);
+    if (voidwar && loop === 0) {
+      const ramp = Math.min(1, 0.55 + 0.45 * ((st.warT || 0) / STORY.warRampT));
+      batch = Math.max(1, Math.round(batch * ramp));
+    }
     const openVoids = (voidwar && !classicSpawns) ? st.voids.filter(v => !v.sealed && v.open > 0.5) : null;
     for (let i = 0; i < batch; i++) {
       // calm phase: beginner types only (mites + dashers)
@@ -874,14 +893,16 @@ function voidSpawnPos(open) {
 /* ---------------- boss: WARDEN ---------------- */
 function spawnBoss(x, y) {
   const n = G.bossCount;
-  const hp = 1100 * (1 + (n - 1) * 0.8) * (1 + G.time / 300);
+  const loop = (G.story && G.story.phase !== 'off') ? (G.story.loop | 0) : 0;
+  // tuned so a ~33%-progress player needs ~25-35s per boss; hard-mode loops scale up
+  const hp = 13000 * (1 + (n - 1) * 0.35) * (1 + G.time / 600) * Math.pow(CFG.loopBossHp, loop);
   const pos = (x === undefined) ? spawnRing(120) : { x, y };
   const b = {
     type: 'boss', boss: true,
     storyBoss: false, voidRef: null, // storyline: the void this boss emerged from
     x: pos.x, y: pos.y, vx: 0, vy: 0,
     hp, maxhp: hp,
-    spd: 95, dmg: 24 * CFG.dmgMul(G.time), r: 46 * S + 14,
+    spd: 95, dmg: 24 * CFG.dmgMul(G.time) * Math.pow(CFG.loopFoeDmg, loop), r: 46 * S + 14,
     score: 1500, xp: 40,
     color: COL.boss, shape: 8,
     rot: 0, rotV: 1.2, flash: 0, t: 0,
@@ -1038,15 +1059,20 @@ function damagePlayer(dmg, sx, sy) {
    UPGRADES
    ============================================================ */
 const UPOOL = [
-  { id: 'overclock', ico: '⚡', name: 'OVERCLOCK',  desc: '+20% fire rate',            max: 99, apply(p) { p.fireRate *= 1.20; } },
-  { id: 'heavy',     ico: '💥', name: 'HEAVY ROUNDS', desc: '+25% bullet damage',      max: 99, apply(p) { p.dmg *= 1.25; } },
+  { id: 'overclock', ico: '⚡', name: 'OVERCLOCK',  desc: '+20% fire rate (less on repeats)', max: 99,
+    drBonus: 0.20, drApply(p, b) { p.fireRate *= 1 + b; } },
+  { id: 'heavy',     ico: '💥', name: 'HEAVY ROUNDS', desc: '+25% bullet damage (less on repeats)', max: 99,
+    drBonus: 0.25, drApply(p, b) { p.dmg *= 1 + b; } },
   { id: 'split',     ico: '🔱', name: 'SPLIT SHOT', desc: '+1 projectile per shot',    max: 3,  apply(p) { p.proj += 1; } },
   { id: 'pierce',    ico: '➹',  name: 'PIERCER',   desc: 'Bullets pierce +1 enemy',    max: 3,  apply(p) { p.pierce += 1; } },
-  { id: 'swift',     ico: '👟', name: 'ION THRUSTERS', desc: '+12% move speed',        max: 99, apply(p) { p.speed *= 1.12; } },
+  { id: 'swift',     ico: '👟', name: 'ION THRUSTERS', desc: '+12% move speed (less on repeats)', max: 99,
+    drBonus: 0.12, drApply(p, b) { p.speed *= 1 + b; } },
   { id: 'vital',     ico: '❤',  name: 'REINFORCED HULL', desc: '+25 max hull, repair 40', max: 99, apply(p) { p.maxhp += 25; p.hp = Math.min(p.maxhp, p.hp + 40); } },
-  { id: 'magnet',    ico: '🧲', name: 'TRACTOR FIELD', desc: '+45% pickup radius',     max: 99, apply(p) { p.magnet *= 1.45; } },
+  { id: 'magnet',    ico: '🧲', name: 'TRACTOR FIELD', desc: '+45% pickup radius (less on repeats)', max: 99,
+    drBonus: 0.45, drApply(p, b) { p.magnet *= 1 + b; } },
   { id: 'seeker',    ico: '🎯', name: 'SEEKER PROTOCOL', desc: 'Heat-seek +1 stage (max 5)', max: 5,  apply(p) { p.seek = Math.min(5, p.seek + 1); } },
-  { id: 'crit',      ico: '🎯', name: 'CRITICAL MATRIX', desc: '+12% crit chance (2.2× dmg)', max: 5, apply(p) { p.crit += 0.12; } },
+  { id: 'crit',      ico: '🎯', name: 'CRITICAL MATRIX', desc: '+12% crit chance (2.2× dmg, less on repeats)', max: 5,
+    drBonus: 0.12, drApply(p, b) { p.crit += b; } },
   { id: 'siphon',    ico: '🩸', name: 'SIPHON CORE', desc: 'Regain hull from kills',   max: 3,  apply(p) { p.siphon += 1; } },
   { id: 'repair',    ico: '🔧', name: 'FIELD REPAIR', desc: 'Restore 50 hull now',     max: 99, apply(p) { p.hp = Math.min(p.maxhp, p.hp + 50); } },
 ];
@@ -1065,8 +1091,14 @@ function rollUpgrades() {
 function applyUpgrade(id) {
   const u = UPOOL.find(x => x.id === id);
   if (!u) return;
-  u.apply(G.player);
-  G.upgrades[id] = (G.upgrades[id] || 0) + 1;
+  const n = G.upgrades[id] || 0;
+  if (u.drApply) {
+    // diminishing returns: each repeat grants bonus * pickDR^n (first pick = full bonus)
+    u.drApply(G.player, u.drBonus * Math.pow(CFG.pickDR, n));
+  } else {
+    u.apply(G.player);
+  }
+  G.upgrades[id] = n + 1;
   toast(u.ico + ' ' + u.name);
   AU.level();
 }
@@ -1795,6 +1827,17 @@ function renderDev() {
   num(g, 'Void boss first (s)', STORY, 'voidBossFirst', 5, 5, 300, 0, 'story_bossfirst');
   num(g, 'Void boss every (s)', STORY, 'voidBossEvery', 5, 10, 600, 0, 'story_bossevery');
   num(g, 'Rupture hold (s)', STORY, 'ruptureHold', 1, 0, 30, 0, 'story_hold');
+  num(g, 'War ramp (s)', STORY, 'warRampT', 5, 0, 120, 0, 'story_wartramp');
+
+  // ---- hard mode: void-plus loop scaling (next run) ----
+  b.appendChild(devSection('HARD MODE · loop scaling, applies on run start'));
+  g = devGrid(); b.appendChild(g);
+  num(g, 'Pick DR decay', CFG, 'pickDR', 0.05, 0.1, 1, 2, 'cfg_pickdr');
+  num(g, 'Loop spawn int (s)', CFG, 'loopSpawnInt', 0.05, 0.1, 2, 2, 'cfg_lspawnint');
+  num(g, 'Loop spawn batch+', CFG, 'loopSpawnBatch', 1, 0, 8, 0, 'cfg_lspawnbatch');
+  num(g, 'Loop foe HP ×', CFG, 'loopFoeHp', 0.05, 1, 4, 2, 'cfg_lfoehp');
+  num(g, 'Loop foe dmg ×', CFG, 'loopFoeDmg', 0.05, 1, 4, 2, 'cfg_lfoedmg');
+  num(g, 'Loop boss HP ×', CFG, 'loopBossHp', 0.05, 1, 4, 2, 'cfg_lbosshp');
 
   // ---- points ----
   b.appendChild(devSection('POINTS · applies immediately'));
@@ -2092,6 +2135,7 @@ function startRupture() {
   const st = G.story;
   st.phase = 'rupture';
   st.ruptureT = 0;
+  st.warT = 0;
   // tears rip open into voids
   st.voids = st.tears.map(tr => ({
     x: tr.pts[0].x, y: tr.pts[0].y, r: rand(58, 80),
@@ -2217,6 +2261,7 @@ function continueStory() {
   st.loop++;
   st.bossesDown = 0;
   st.phase = 'voidwar';
+  st.warT = 0;
   st.spawnHold = 3;
   st.bossT = STORY.voidBossFirst;
   st.scars.length = 0;
