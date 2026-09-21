@@ -58,7 +58,7 @@
           <p id="bestline" class="best"></p>
         </div>
       </div>
-      <div id="devlogo">◈ v2.3</div>
+      <div id="devlogo"></div>
     </div>
   </div>
 
@@ -73,7 +73,23 @@
       <div id="storeitems"></div>
       <h3 class="wpn">WEAPONS</h3>
       <div id="storeweapons"></div>
-      <button id="storeback" class="bigbtn">BACK</button>
+      <div class="storefoot">
+        <button id="storeback" class="bigbtn">BACK</button>
+        <button id="shopdevbtn" class="ghostbtn hidden">SHOP DEV</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Shop dev console (hidden) -->
+  <div id="shopdev" class="overlay hidden">
+    <div class="panel devpanel">
+      <h2>SHOP DEV</h2>
+      <p class="tag">economy lab — handle with care</p>
+      <div id="shopdevbody"></div>
+      <div class="devactions">
+        <button id="shopdevreset" class="ghostbtn">RESET SHOP DEFAULTS</button>
+        <button id="shopdevback" class="ghostbtn">BACK</button>
+      </div>
     </div>
   </div>
 
