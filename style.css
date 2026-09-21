@@ -87,6 +87,17 @@ h2.red { color:#ffdfe8; text-shadow:0 0 14px #ff4d6d; }
 .bigbtn.green { background:linear-gradient(180deg,#7dffb0,#2bd97c); box-shadow:0 0 24px rgba(81,255,158,.45); }
 .ghostbtn.red { border-color:rgba(255,90,110,.55); color:#ff8fa0; }
 h2.violet { color:#e9d8ff; text-shadow:0 0 14px #b14dff, 0 0 50px rgba(177,77,255,.5); }
+h2.cyan { color:#d8fbff; text-shadow:0 0 14px #46f6ff, 0 0 50px rgba(70,246,255,.4); }
+h2.gold { color:#fff3d8; text-shadow:0 0 14px #ffb454, 0 0 50px rgba(255,180,84,.4); }
+
+/* dev hub + live ops */
+.hubbtn { display:block; width:100%; margin:10px 0; text-align:center; }
+.hubbtn .sub { display:block; font-size:10px; letter-spacing:2px; opacity:.65; font-weight:400; margin-top:5px; }
+.livebtn { padding:10px 8px; font-size:11px; letter-spacing:1px; font-weight:700;
+  background:rgba(20,30,60,.9); border:1px solid rgba(255,180,84,.45); color:#ffd9a0;
+  border-radius:8px; cursor:pointer; font-family:inherit; }
+.livebtn:active { background:rgba(255,180,84,.25); }
+#liveopsbody .tag { margin:8px 0; }
 @media (max-width:700px) {
   #badgeline { justify-content:center; }
 }
