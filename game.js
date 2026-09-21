@@ -14,7 +14,7 @@ const dist2 = (ax, ay, bx, by) => { const dx = ax - bx, dy = ay - by; return dx 
 const pick = (arr) => arr[(Math.random() * arr.length) | 0];
 
 /* single source of truth for the game version — shown on the menu badge */
-const GAME_VERSION = '2.5';
+const GAME_VERSION = '2.6';
 
 /* ---------------- config ---------------- */
 const CFG = {
@@ -25,15 +25,15 @@ const CFG = {
   world: { w: 2200, h: 1500 },  // arena is ~2.5-3x a phone viewport
   camZoom: 0.85,                // zoomed out slightly
   // ---- dev-tunable pacing params (functions below derive from these) ----
-  spawnBase: 1.15,              // spawn interval at t=0 (s)
-  spawnDecay: 0.0058,           // interval shrink per second
-  spawnMin: 0.26,               // fastest spawn interval (s)
-  batchEvery: 55,               // +1 enemy per batch every N seconds
-  hpRate: 70,                   // enemy HP doubles every N seconds
+  spawnBase: 1.30,              // spawn interval at t=0 (s)
+  spawnDecay: 0.0032,           // interval shrink per second
+  spawnMin: 0.38,               // fastest spawn interval (s)
+  batchEvery: 80,               // +1 enemy per batch every N seconds
+  hpRate: 100,                  // enemy HP doubles every N seconds
   spdRate: 280,                 // enemy speed ramps over N seconds
   spdCap: 0.45,                 // max speed growth (+45%)
-  dmgRate: 240,                 // enemy damage doubles every N seconds
-  xpBase: 8, xpPow: 1.42,       // xpNeed = xpBase * lvl^xpPow
+  dmgRate: 360,                 // enemy damage doubles every N seconds
+  xpBase: 7, xpPow: 1.35,       // xpNeed = xpBase * lvl^xpPow
   eliteEvery: 42,               // seconds between elites
   firstElite: 50,               // first elite at this time (s)
   bossEvery: 150,               // seconds between bosses
@@ -343,25 +343,15 @@ const META = {
   up: { dmg: 0, rate: 0, spd: 0, hull: 0, mag: 0, seek: 0 },
   nukes: 0,          // purchased +starting nukes (max 2)
   aegis: 0,          // shield charges per run (max 3)
-  weapons: { pulse: true, scatter: false, rail: false },
+  wlvl: {},          // weapon id -> level (0 = not owned, 1 = base)
   weapon: 'pulse',
 };
-try {
-  META.pts = parseInt(localStorage.getItem('neonvoid_pts') || '0', 10) || 0;
-  const m = JSON.parse(localStorage.getItem('neonvoid_meta') || 'null');
-  if (m) {
-    if (m.up) for (const k in META.up) META.up[k] = m.up[k] | 0;
-    META.nukes = m.nukes | 0; META.aegis = m.aegis | 0;
-    if (m.weapons) for (const k in META.weapons) META.weapons[k] = !!m.weapons[k];
-    if (m.weapon && META.weapons[m.weapon]) META.weapon = m.weapon;
-  }
-} catch (e) {}
 function saveMeta() {
   try {
     localStorage.setItem('neonvoid_pts', String(META.pts));
     localStorage.setItem('neonvoid_meta', JSON.stringify({
       up: META.up, nukes: META.nukes, aegis: META.aegis,
-      weapons: META.weapons, weapon: META.weapon,
+      wlvl: META.wlvl, weapon: META.weapon,
     }));
   } catch (e) {}
 }
@@ -378,13 +368,59 @@ const META_ITEMS = [
   { id: 'nukes', ico: '☢', name: 'NUKE CACHE',   desc: '+1 starting nuke',        max: 2, base: 150 },
   { id: 'aegis', ico: '🛡', name: 'AEGIS SHIELD', desc: '+1 shield charge per run', max: 3, base: 120 },
 ];
+/* weapon mods: proj/pierce add shots, dmgMul/rateMul/spdMul multiply,
+   spread is extra radians. perLvl is added to each mod per weapon level
+   beyond 1 (lvl 1 = base mods). */
 const WEAPONS = {
-  pulse:   { name: 'PULSE',   ico: '🔫', cost: 0,   desc: 'Standard issue. Balanced.' },
-  scatter: { name: 'SCATTER', ico: '🌪', cost: 400, desc: '+2 projectiles, -30% damage, wider spread',
-             proj: 2, dmgMul: 0.7, spread: 0.07 },
-  rail:    { name: 'RAILGUN', ico: '🔩', cost: 600, desc: '-55% fire rate, +220% damage, pierce +3',
-             rateMul: 0.45, dmgMul: 3.2, pierce: 3, spdMul: 1.4 },
+  pulse:   { name: 'PULSE',   ico: '🔫', cost: 0,   lvlCost: 60,  maxLvl: 5,
+             desc: 'Standard issue. Balanced.',
+             mods:   { proj: 0, dmgMul: 1,    rateMul: 1,    pierce: 0, spdMul: 1,   spread: 0 },
+             perLvl: { proj: 0, dmgMul: 0.10, rateMul: 0.05, pierce: 0, spdMul: 0.03, spread: 0 } },
+  scatter: { name: 'SCATTER', ico: '🌪', cost: 400, lvlCost: 220, maxLvl: 3,
+             desc: '+2 projectiles, -30% damage, wider spread',
+             mods:   { proj: 2, dmgMul: 0.70, rateMul: 1,    pierce: 0, spdMul: 1,   spread: 0.07 },
+             perLvl: { proj: 1, dmgMul: 0.08, rateMul: 0.04, pierce: 0, spdMul: 0.02, spread: -0.01 } },
+  rail:    { name: 'RAILGUN', ico: '🔩', cost: 600, lvlCost: 300, maxLvl: 3,
+             desc: '-55% fire rate, +220% damage, pierce +3',
+             mods:   { proj: 0, dmgMul: 3.20, rateMul: 0.45, pierce: 3, spdMul: 1.4, spread: 0 },
+             perLvl: { proj: 0, dmgMul: 0.35, rateMul: 0.03, pierce: 1, spdMul: 0.05, spread: 0 } },
+  tempest: { name: 'TEMPEST', ico: '⛈', cost: 500, lvlCost: 260, maxLvl: 3,
+             desc: '+4 projectiles, -50% damage, storm spread',
+             mods:   { proj: 4, dmgMul: 0.50, rateMul: 1.10, pierce: 0, spdMul: 1,   spread: 0.16 },
+             perLvl: { proj: 1, dmgMul: 0.07, rateMul: 0.05, pierce: 1, spdMul: 0.02, spread: -0.015 } },
+  lancer:  { name: 'LANCER',  ico: '🗡', cost: 550, lvlCost: 280, maxLvl: 3,
+             desc: '+150% damage, pierce +5, hypervelocity',
+             mods:   { proj: 0, dmgMul: 2.50, rateMul: 0.65, pierce: 5, spdMul: 1.6, spread: 0 },
+             perLvl: { proj: 0, dmgMul: 0.30, rateMul: 0.04, pierce: 1, spdMul: 0.06, spread: 0 } },
+  photon:  { name: 'PHOTON',  ico: '🔆', cost: 450, lvlCost: 240, maxLvl: 3,
+             desc: '+80% fire rate, -25% damage, bullet hose',
+             mods:   { proj: 0, dmgMul: 0.75, rateMul: 1.80, pierce: 0, spdMul: 1,   spread: 0.03 },
+             perLvl: { proj: 0, dmgMul: 0.06, rateMul: 0.12, pierce: 1, spdMul: 0.02, spread: -0.005 } },
 };
+/* effective mod value for a weapon at a given level (lvl 1 = base) */
+function wmod(w, k, lvl) {
+  return (w.mods[k] || 0) + (w.perLvl[k] || 0) * Math.max(0, lvl - 1);
+}
+
+/* init + load weapon levels (runs after WEAPONS is defined) */
+Object.keys(WEAPONS).forEach((id) => { META.wlvl[id] = id === 'pulse' ? 1 : 0; });
+try {
+  META.pts = parseInt(localStorage.getItem('neonvoid_pts') || '0', 10) || 0;
+  const m = JSON.parse(localStorage.getItem('neonvoid_meta') || 'null');
+  if (m) {
+    if (m.up) for (const k in META.up) META.up[k] = m.up[k] | 0;
+    META.nukes = m.nukes | 0; META.aegis = m.aegis | 0;
+    if (m.wlvl) {
+      // current format: weapon levels
+      for (const id in META.wlvl) META.wlvl[id] = m.wlvl[id] | 0;
+    } else if (m.weapons) {
+      // migrate from the old buy-once format: owned -> level 1
+      for (const id in META.wlvl) META.wlvl[id] = m.weapons[id] ? 1 : 0;
+      META.wlvl.pulse = Math.max(1, META.wlvl.pulse);
+    }
+    if (m.weapon && (META.wlvl[m.weapon] | 0) > 0) META.weapon = m.weapon;
+  }
+} catch (e) {}
 /* dev-tunable shop economy */
 const SHOP = {
   costGrowth: 1.65,  // upgrade cost = round(base * costGrowth^lvl)
@@ -411,12 +447,17 @@ function applyMeta(p) {
   p.nukes = Math.min(SHOP.nukeCap, 1 + META.nukes);
   p.shields = META.aegis;
   const w = WEAPONS[META.weapon] || WEAPONS.pulse;
-  if (w.proj) p.proj += w.proj;
-  if (w.dmgMul && w.dmgMul !== 1) p.dmg *= w.dmgMul;
-  if (w.rateMul && w.rateMul !== 1) p.fireRate *= w.rateMul;
-  if (w.pierce) p.pierce += w.pierce;
-  if (w.spdMul && w.spdMul !== 1) p.bulletSpeed *= w.spdMul;
-  if (w.spread) p.spreadBonus = w.spread;
+  const wl = Math.max(1, META.wlvl[META.weapon] | 0);
+  const proj = Math.round(wmod(w, 'proj', wl));
+  const pierce = Math.round(wmod(w, 'pierce', wl));
+  if (proj) p.proj += proj;
+  const dmgM = wmod(w, 'dmgMul', wl), rateM = wmod(w, 'rateMul', wl), spdM = wmod(w, 'spdMul', wl);
+  if (dmgM !== 1) p.dmg *= dmgM;
+  if (rateM !== 1) p.fireRate *= rateM;
+  if (spdM !== 1) p.bulletSpeed *= spdM;
+  if (pierce) p.pierce += pierce;
+  const spr = wmod(w, 'spread', wl);
+  if (spr > 0) p.spreadBonus = spr;
 }
 
 // dev-tunable player base stats (applied on run start)
@@ -619,7 +660,7 @@ const ETYPES = {
   mite:   { hp: 22,  spd: 165, dmg: 8,  r: 13, score: 10, xp: 1, color: COL.mite,   shape: 3 },
   dasher: { hp: 34,  spd: 150, dmg: 12, r: 14, score: 20, xp: 2, color: COL.dasher,  shape: 4 },
   spitter:{ hp: 40,  spd: 120, dmg: 10, r: 15, score: 30, xp: 3, color: COL.spitter, shape: 4 },
-  tank:   { hp: 150, spd: 72,  dmg: 20, r: 24, score: 60, xp: 6, color: COL.tank,    shape: 6 },
+  tank:   { hp: 120, spd: 72,  dmg: 20, r: 24, score: 60, xp: 6, color: COL.tank,    shape: 6 },
 };
 const ETYPES_DEFAULTS = JSON.parse(JSON.stringify(ETYPES));
 
@@ -912,6 +953,8 @@ const el = {};
  'store', 'storebtn', 'storeback', 'storepts', 'storeups', 'storeitems', 'storeweapons',
  'startbtn', 'retrybtn', 'menubtn', 'resumebtn', 'quitbtn', 'pausebtn', 'mutebtn',
  'devlogo', 'devbtn', 'devmenu', 'devbody', 'devrestart', 'devreset', 'devback',
+'devhelpbtn', 'shopdevhelpbtn', 'helpop', 'helptitle', 'helpbody', 'helpcur', 'helpclose',
+'pdevbtn',
  'shopdevbtn', 'shopdev', 'shopdevbody', 'shopdevback', 'shopdevreset',
  'orientgate', 'gatetitle', 'gatebody', 'gatehelp'
 ].forEach(id => { el[id] = document.getElementById(id); });
@@ -953,6 +996,8 @@ function onLevelUp() {
   if (G.mode !== 'playing') return;
   G.mode = 'levelup';
   AU.level();
+  // small breather: patch up a little hull on every level
+  G.player.hp = Math.min(G.player.maxhp, G.player.hp + 20);
   spawnParts(G.player.x, G.player.y, COL.xp, 30, 320, 0.8, 5);
   const picks = rollUpgrades();
   el.cards.innerHTML = '';
@@ -1082,7 +1127,9 @@ function renderStore() {
   el.storeweapons.innerHTML = '';
   Object.keys(WEAPONS).forEach(id => {
     const w = WEAPONS[id];
-    const owned = META.weapons[id];
+    const lvl = META.wlvl[id] | 0;
+    const owned = lvl > 0;
+    const maxed = lvl >= w.maxLvl;
     const equipped = META.weapon === id;
     const row = document.createElement('div');
     row.className = 'srow wpn' + (equipped ? ' equipped' : '');
@@ -1090,22 +1137,43 @@ function renderStore() {
     info.className = 'sinfo';
     info.innerHTML =
       '<div class="sicotx">' + w.ico + '</div>' +
-      '<div><div class="snm">' + w.name + '</div>' +
-      '<div class="sds">' + w.desc + '</div></div>';
+      '<div><div class="snm">' + w.name + (owned ? ' <span class="wlvl">LV' + lvl + '</span>' : '') + '</div>' +
+      '<div class="sds">' + w.desc + '</div>' +
+      (owned ? '<div class="spips">' + pips(lvl, w.maxLvl) + '</div>' : '') + '</div>';
     const btn = document.createElement('button');
-    btn.className = 'sbuy' + (equipped ? ' maxed' : '');
-    btn.textContent = equipped ? 'EQUIPPED' : owned ? 'EQUIP' : w.cost + ' ◈';
-    btn.addEventListener('click', () => {
-      if (!owned) {
-        if (META.pts < w.cost) { toast('NOT ENOUGH POINTS'); AU.hit(); return; }
-        META.pts -= w.cost;
-        META.weapons[id] = true;
-        toast(w.ico + ' ' + w.name + ' UNLOCKED');
+    let label, cost = 0, action = null;
+    if (!owned) {
+      cost = w.cost; label = cost + ' ◈';
+      action = () => { META.wlvl[id] = 1; META.weapon = id; toast(w.ico + ' ' + w.name + ' UNLOCKED'); };
+    } else if (!maxed) {
+      // button upgrades the weapon; tapping the row equips it (see below)
+      cost = metaCost(w.lvlCost, lvl); label = 'UP ' + cost + ' ◈';
+      action = () => { META.wlvl[id]++; toast(w.ico + ' ' + w.name + ' LV' + META.wlvl[id]); };
+    } else {
+      label = equipped ? 'EQUIPPED' : 'EQUIP';
+      action = () => { META.weapon = id; toast(w.ico + ' ' + w.name + ' EQUIPPED'); };
+    }
+    btn.className = 'sbuy' + ((maxed && equipped) ? ' maxed' : '');
+    btn.textContent = label;
+    btn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      if (cost > 0) {
+        if (META.pts < cost) { toast('NOT ENOUGH POINTS'); AU.hit(); return; }
+        META.pts -= cost;
       }
-      META.weapon = id;
+      action();
       saveMeta(); AU.click();
       renderStore(); refreshMenuPts();
     });
+    if (owned && !equipped) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', () => {
+        META.weapon = id;
+        saveMeta(); AU.click();
+        renderStore(); refreshMenuPts();
+        toast(w.ico + ' ' + w.name + ' EQUIPPED');
+      });
+    }
     row.appendChild(info);
     row.appendChild(btn);
     el.storeweapons.appendChild(row);
@@ -1154,23 +1222,31 @@ function devLogoTap() {
 
 function unlockDev() {
   el.devbtn.classList.remove('hidden');
+  el.pdevbtn.classList.remove('hidden');
   try { localStorage.setItem(DEV_KEY, '1'); } catch (e) {}
 }
 
-function openDev() {
+let devReturn = 'menu'; // where to go when the dev console closes
+function openDev(from) {
   AU.click();
+  devReturn = from || 'menu';
   renderDev();
   el.menu.classList.add('hidden');
+  el.paused.classList.add('hidden');
   el.devmenu.classList.remove('hidden');
 }
 function closeDev() {
   AU.click();
   el.devmenu.classList.add('hidden');
-  el.menu.classList.remove('hidden');
-  refreshMenuPts();
+  if (devReturn === 'pause' && G.mode === 'paused') {
+    el.paused.classList.remove('hidden');
+  } else {
+    el.menu.classList.remove('hidden');
+    refreshMenuPts();
+  }
 }
 
-function devNum(label, get, set, step, min, max, dec) {
+function devNum(label, get, set, step, min, max, dec, help) {
   const row = document.createElement('div');
   row.className = 'devrow';
   const lab = document.createElement('label');
@@ -1187,7 +1263,106 @@ function devNum(label, get, set, step, min, max, dec) {
   plus.addEventListener('click', () => { set(clamp(get() + step, min, max)); upd(); AU.click(); });
   upd();
   row.append(lab, minus, val, plus);
+  if (help) {
+    row.classList.add('hashelp');
+    row.addEventListener('click', (ev) => {
+      if (!HELP_ON || ev.target.closest('button')) return;
+      openHelp(label, HELP_TEXT[help] || 'No description yet.', get());
+    });
+  }
   return row;
+}
+
+/* ---- dev help mode: tap any option for a popup explaining it ---- */
+let HELP_ON = false;
+const HELP_TEXT = {
+  // spawning
+  maxenemies: 'Hard cap on living enemies. The spawner waits while the cap is reached. Lower it to thin out swarm pressure.',
+  spawnbase: 'Seconds between spawn ticks when the run starts. Higher = a calmer opening minute.',
+  spawndecay: 'Every second, the spawn interval shrinks by this much. Higher = difficulty ramps up faster.',
+  spawnmin: 'The spawn interval never goes below this. The ramp stops here no matter how long the run lasts.',
+  batchevery: 'Every N seconds, each spawn tick releases one extra enemy at once.',
+  eliteevery: 'Seconds between elite spawns, after the first elite appears. Elites have 5× HP and drop bonus loot.',
+  firstelite: 'Run time in seconds when the first elite spawns.',
+  bossevery: 'Seconds between boss spawns, after the first boss.',
+  firstboss: 'Run time in seconds when the first boss spawns.',
+  // enemy scaling
+  hprate: 'Enemy HP multiplier = 1 + time / N. At N seconds enemies have 2× HP, at 2N they have 3×.',
+  spdrate: 'Enemy speed grows from its base toward the cap over this many seconds.',
+  spdCap: 'Maximum enemy speed bonus. 0.45 means enemies can get up to 45% faster than base.',
+  dmgrate: 'Enemy damage multiplier = 1 + time / N. At N seconds enemies hit 2× as hard.',
+  // enemy types
+  et_hp: 'Base hull of this enemy type, before time scaling. Applies to newly spawned enemies.',
+  et_spd: 'Base move speed of this enemy type. Applies to newly spawned enemies.',
+  et_dmg: 'Base contact damage of this enemy type, before time scaling.',
+  et_xp: 'XP gem value dropped when this enemy type dies.',
+  et_score: 'Score awarded for killing this enemy type.',
+  // drops
+  elitenukech: 'Chance an elite drops a bonus nuke pickup when killed.',
+  elitehealch: 'Chance an elite drops a hull-repair pickup when killed.',
+  // player base
+  pb_hp: 'Hull at the start of every run, before the REINFORCED store upgrade.',
+  pb_speed: 'Move speed at run start, before ION DRIVE.',
+  pb_firerate: 'Shots per second at run start, before the OVERCLOCKED store upgrade.',
+  pb_dmg: 'Damage per bullet at run start, before HEAVY PLATING.',
+  pb_proj: 'Projectiles fired per shot at run start.',
+  pb_pierce: 'How many extra enemies each bullet passes through at run start.',
+  pb_bulletspeed: 'Bullet travel speed at run start.',
+  pb_magnet: 'Pickup attraction radius at run start, before TRACTOR MK-II.',
+  pb_seek: 'Homing stage at run start (0–5), before SEEKER TUNE.',
+  pb_crit: 'Base crit chance at run start. Crits deal 2.2× damage.',
+  pb_nukes: 'Nukes carried at run start, before NUKE CACHE.',
+  pb_shields: 'Aegis shield charges at run start, before AEGIS SHIELD.',
+  // progression
+  xpb: 'XP needed for level L = base × L^power. Lower base = faster early levels.',
+  xpp: 'Exponent of the XP curve. Higher = later levels cost much more XP.',
+  // points
+  pts: 'Your meta-point bank. Points persist between runs and buy store upgrades.',
+  // shop economy
+  costgrowth: 'Every store price = round(base × growth^level). Higher = steeper price climb per level.',
+  scoreperpoint: 'After each run: points earned = floor(score / this). Lower = more generous payouts.',
+  nukecap: 'Maximum nukes you can hold in a run, even with NUKE CACHE maxed.',
+  // shop upgrades / supplies
+  up_base: 'Point cost of level 1 of this upgrade.',
+  up_max: 'Highest level this upgrade can reach.',
+  up_eff: 'What each level adds. Shown as % for multipliers, flat numbers for hull.',
+  sup_base: 'Point cost of the first rank of this supply.',
+  sup_max: 'Maximum ranks you can buy of this supply.',
+  // shop weapons
+  w_cost: 'Point cost to unlock this weapon (level 1). PULSE is free.',
+  w_lvlcost: 'Base cost of each weapon level-up. Actual price = round(base × cost-growth^level).',
+  w_maxlvl: 'Highest level this weapon can reach. Level 1 = base stats.',
+  w_proj: 'Extra projectiles per shot at weapon level 1.',
+  w_dmgmul: 'Damage multiplier at weapon level 1.',
+  w_ratemul: 'Fire-rate multiplier at weapon level 1.',
+  w_pierce: 'Extra bullet pierce at weapon level 1.',
+  w_spdmul: 'Bullet-speed multiplier at weapon level 1.',
+  w_spread: 'Extra shot spread in radians at weapon level 1.',
+  w_plvl: 'Added to the matching base stat for each weapon level beyond 1.',
+};
+
+function setHelp(on) {
+  HELP_ON = on;
+  document.body.classList.toggle('showhelp', on);
+  [el.devhelpbtn, el.shopdevhelpbtn].forEach((b) => {
+    if (!b) return;
+    b.textContent = 'HELP: ' + (on ? 'ON' : 'OFF');
+    b.classList.toggle('on', on);
+  });
+  if (on) toast('TAP ANY OPTION FOR DETAILS');
+  AU.click();
+}
+
+function openHelp(title, body, val) {
+  el.helptitle.textContent = title.toUpperCase();
+  el.helpbody.textContent = body;
+  el.helpcur.textContent = 'CURRENT: ' + (typeof val === 'number' ? String(Math.round(val * 1000) / 1000) : String(val));
+  el.helpop.classList.remove('hidden');
+  AU.click();
+}
+function closeHelp() {
+  el.helpop.classList.add('hidden');
+  AU.click();
 }
 
 function devSection(title) {
@@ -1205,29 +1380,29 @@ function devGrid() {
 function renderDev() {
   const b = el.devbody;
   b.innerHTML = '';
-  const num = (parent, label, obj, key, step, min, max, dec) =>
-    parent.appendChild(devNum(label, () => obj[key], (v) => { obj[key] = v; }, step, min, max, dec));
+  const num = (parent, label, obj, key, step, min, max, dec, help) =>
+    parent.appendChild(devNum(label, () => obj[key], (v) => { obj[key] = v; }, step, min, max, dec, help));
 
   // ---- spawning (live) ----
   b.appendChild(devSection('SPAWNING · applies live'));
   let g = devGrid(); b.appendChild(g);
-  num(g, 'Max enemies', CFG, 'maxEnemies', 5, 1, 500, 0);
-  num(g, 'Spawn interval base (s)', CFG, 'spawnBase', 0.05, 0.05, 5, 2);
-  num(g, 'Interval shrink /s', CFG, 'spawnDecay', 0.0005, 0, 0.05, 4);
-  num(g, 'Spawn interval min (s)', CFG, 'spawnMin', 0.05, 0.05, 5, 2);
-  num(g, 'Batch +1 every (s)', CFG, 'batchEvery', 1, 5, 300, 0);
-  num(g, 'Elite every (s)', CFG, 'eliteEvery', 1, 5, 600, 0);
-  num(g, 'First elite at (s)', CFG, 'firstElite', 1, 0, 600, 0);
-  num(g, 'Boss every (s)', CFG, 'bossEvery', 5, 10, 1200, 0);
-  num(g, 'First boss at (s)', CFG, 'firstBoss', 5, 0, 1200, 0);
+  num(g, 'Max enemies', CFG, 'maxEnemies', 5, 1, 500, 0, 'maxenemies');
+  num(g, 'Spawn interval base (s)', CFG, 'spawnBase', 0.05, 0.05, 5, 2, 'spawnbase');
+  num(g, 'Interval shrink /s', CFG, 'spawnDecay', 0.0005, 0, 0.05, 4, 'spawndecay');
+  num(g, 'Spawn interval min (s)', CFG, 'spawnMin', 0.05, 0.05, 5, 2, 'spawnmin');
+  num(g, 'Batch +1 every (s)', CFG, 'batchEvery', 1, 5, 300, 0, 'batchevery');
+  num(g, 'Elite every (s)', CFG, 'eliteEvery', 1, 5, 600, 0, 'eliteevery');
+  num(g, 'First elite at (s)', CFG, 'firstElite', 1, 0, 600, 0, 'firstelite');
+  num(g, 'Boss every (s)', CFG, 'bossEvery', 5, 10, 1200, 0, 'bossevery');
+  num(g, 'First boss at (s)', CFG, 'firstBoss', 5, 0, 1200, 0, 'firstboss');
 
   // ---- enemy scaling (live) ----
   b.appendChild(devSection('ENEMY SCALING · applies live'));
   g = devGrid(); b.appendChild(g);
-  num(g, 'HP doubles every (s)', CFG, 'hpRate', 1, 5, 900, 0);
-  num(g, 'Speed ramps over (s)', CFG, 'spdRate', 5, 20, 1800, 0);
-  num(g, 'Speed growth cap', CFG, 'spdCap', 0.05, 0, 2, 2);
-  num(g, 'Damage doubles every (s)', CFG, 'dmgRate', 5, 20, 1800, 0);
+  num(g, 'HP doubles every (s)', CFG, 'hpRate', 1, 5, 900, 0, 'hprate');
+  num(g, 'Speed ramps over (s)', CFG, 'spdRate', 5, 20, 1800, 0, 'spdrate');
+  num(g, 'Speed growth cap', CFG, 'spdCap', 0.05, 0, 2, 2, 'spdCap');
+  num(g, 'Damage doubles every (s)', CFG, 'dmgRate', 5, 20, 1800, 0, 'dmgrate');
 
   // ---- enemy types (new spawns) ----
   b.appendChild(devSection('ENEMY TYPES · applies to newly spawned'));
@@ -1238,40 +1413,40 @@ function renderDev() {
     b.appendChild(dh);
     g = devGrid(); b.appendChild(g);
     const E = ETYPES[t];
-    num(g, 'HP', E, 'hp', 1, 1, 9999, 0);
-    num(g, 'Speed', E, 'spd', 5, 10, 1200, 0);
-    num(g, 'Damage', E, 'dmg', 1, 0, 999, 0);
-    num(g, 'XP', E, 'xp', 1, 0, 500, 0);
-    num(g, 'Score', E, 'score', 5, 0, 5000, 0);
+    num(g, 'HP', E, 'hp', 1, 1, 9999, 0, 'et_hp');
+    num(g, 'Speed', E, 'spd', 5, 10, 1200, 0, 'et_spd');
+    num(g, 'Damage', E, 'dmg', 1, 0, 999, 0, 'et_dmg');
+    num(g, 'XP', E, 'xp', 1, 0, 500, 0, 'et_xp');
+    num(g, 'Score', E, 'score', 5, 0, 5000, 0, 'et_score');
   });
 
   // ---- drops (live) ----
   b.appendChild(devSection('DROPS · applies live'));
   g = devGrid(); b.appendChild(g);
-  num(g, 'Elite nuke chance', CFG, 'eliteNukeCh', 0.01, 0, 1, 2);
-  num(g, 'Elite heal chance', CFG, 'eliteHealCh', 0.01, 0, 1, 2);
+  num(g, 'Elite nuke chance', CFG, 'eliteNukeCh', 0.01, 0, 1, 2, 'elitenukech');
+  num(g, 'Elite heal chance', CFG, 'eliteHealCh', 0.01, 0, 1, 2, 'elitehealch');
 
   // ---- player base (next run) ----
   b.appendChild(devSection('PLAYER BASE · applies on run start'));
   g = devGrid(); b.appendChild(g);
-  num(g, 'Max hull', PBASE, 'hp', 5, 1, 5000, 0);
-  num(g, 'Move speed', PBASE, 'speed', 10, 50, 1500, 0);
-  num(g, 'Fire rate /s', PBASE, 'fireRate', 0.25, 0.5, 30, 2);
-  num(g, 'Bullet damage', PBASE, 'dmg', 1, 1, 999, 0);
-  num(g, 'Projectiles', PBASE, 'proj', 1, 1, 12, 0);
-  num(g, 'Pierce', PBASE, 'pierce', 1, 0, 12, 0);
-  num(g, 'Bullet speed', PBASE, 'bulletSpeed', 20, 100, 4000, 0);
-  num(g, 'Magnet radius', PBASE, 'magnet', 5, 10, 900, 0);
-  num(g, 'Homing stage', PBASE, 'seek', 1, 0, 5, 0);
-  num(g, 'Crit chance', PBASE, 'crit', 0.05, 0, 1, 2);
-  num(g, 'Starting nukes', PBASE, 'nukes', 1, 0, 9, 0);
-  num(g, 'Starting shields', PBASE, 'shields', 1, 0, 9, 0);
+  num(g, 'Max hull', PBASE, 'hp', 5, 1, 5000, 0, 'pb_hp');
+  num(g, 'Move speed', PBASE, 'speed', 10, 50, 1500, 0, 'pb_speed');
+  num(g, 'Fire rate /s', PBASE, 'fireRate', 0.25, 0.5, 30, 2, 'pb_firerate');
+  num(g, 'Bullet damage', PBASE, 'dmg', 1, 1, 999, 0, 'pb_dmg');
+  num(g, 'Projectiles', PBASE, 'proj', 1, 1, 12, 0, 'pb_proj');
+  num(g, 'Pierce', PBASE, 'pierce', 1, 0, 12, 0, 'pb_pierce');
+  num(g, 'Bullet speed', PBASE, 'bulletSpeed', 20, 100, 4000, 0, 'pb_bulletspeed');
+  num(g, 'Magnet radius', PBASE, 'magnet', 5, 10, 900, 0, 'pb_magnet');
+  num(g, 'Homing stage', PBASE, 'seek', 1, 0, 5, 0, 'pb_seek');
+  num(g, 'Crit chance', PBASE, 'crit', 0.05, 0, 1, 2, 'pb_crit');
+  num(g, 'Starting nukes', PBASE, 'nukes', 1, 0, 9, 0, 'pb_nukes');
+  num(g, 'Starting shields', PBASE, 'shields', 1, 0, 9, 0, 'pb_shields');
 
   // ---- progression (next run) ----
   b.appendChild(devSection('PROGRESSION · applies on run start'));
   g = devGrid(); b.appendChild(g);
-  num(g, 'XP base', CFG, 'xpBase', 0.5, 1, 200, 1);
-  num(g, 'XP power', CFG, 'xpPow', 0.01, 1, 3, 2);
+  num(g, 'XP base', CFG, 'xpBase', 0.5, 1, 200, 1, 'xpb');
+  num(g, 'XP power', CFG, 'xpPow', 0.01, 1, 3, 2, 'xpp');
 
   // ---- points ----
   b.appendChild(devSection('POINTS · applies immediately'));
@@ -1295,6 +1470,11 @@ function renderDev() {
   };
   pval.textContent = META.pts.toLocaleString('en-US');
   prow.append(plab, mkp('−1K', -1000), pval, mkp('+1K', 1000), mkp('+10K', 10000));
+  prow.classList.add('hashelp');
+  prow.addEventListener('click', (ev) => {
+    if (!HELP_ON || ev.target.closest('button')) return;
+    openHelp('Points', HELP_TEXT.pts, META.pts);
+  });
   g.appendChild(prow);
 }
 
@@ -1355,14 +1535,14 @@ function closeShopDev() {
 function renderShopDev() {
   const b = el.shopdevbody;
   b.innerHTML = '';
-  const num = (parent, label, obj, key, step, min, max, dec) =>
-    parent.appendChild(devNum(label, () => obj[key], (v) => { obj[key] = v; }, step, min, max, dec));
+  const num = (parent, label, obj, key, step, min, max, dec, help) =>
+    parent.appendChild(devNum(label, () => obj[key], (v) => { obj[key] = v; }, step, min, max, dec, help));
 
   b.appendChild(devSection('ECONOMY · applies immediately'));
   let g = devGrid(); b.appendChild(g);
-  num(g, 'Cost growth / lvl', SHOP, 'costGrowth', 0.05, 1, 5, 2);
-  num(g, 'Score per point', SHOP, 'ptsDiv', 1, 1, 500, 0);
-  num(g, 'Nuke hold cap', SHOP, 'nukeCap', 1, 1, 9, 0);
+  num(g, 'Cost growth / lvl', SHOP, 'costGrowth', 0.05, 1, 5, 2, 'costgrowth');
+  num(g, 'Score per point', SHOP, 'ptsDiv', 1, 1, 500, 0, 'scoreperpoint');
+  num(g, 'Nuke hold cap', SHOP, 'nukeCap', 1, 1, 9, 0, 'nukecap');
 
   b.appendChild(devSection('PERMANENT UPGRADES · cost & effect'));
   META_UPS.forEach((u) => {
@@ -1371,11 +1551,11 @@ function renderShopDev() {
     dh.textContent = u.ico + ' ' + u.name;
     b.appendChild(dh);
     g = devGrid(); b.appendChild(g);
-    num(g, 'Base cost', u, 'base', 5, 0, 9999, 0);
-    num(g, 'Max level', u, 'max', 1, 1, 99, 0);
-    if (u.id === 'hull') num(g, 'Hull / lvl', u, 'eff', 1, 0, 999, 0);
-    else if (u.id === 'seek') num(g, 'Homing / lvl', u, 'eff', 1, 0, 9, 0);
-    else g.appendChild(devNum('Effect / lvl (%)', () => u.eff * 100, (v) => { u.eff = v / 100; }, 1, 0, 200, 0));
+    num(g, 'Base cost', u, 'base', 5, 0, 9999, 0, 'up_base');
+    num(g, 'Max level', u, 'max', 1, 1, 99, 0, 'up_max');
+    if (u.id === 'hull') num(g, 'Hull / lvl', u, 'eff', 1, 0, 999, 0, 'up_eff');
+    else if (u.id === 'seek') num(g, 'Homing / lvl', u, 'eff', 1, 0, 9, 0, 'up_eff');
+    else g.appendChild(devNum('Effect / lvl (%)', () => u.eff * 100, (v) => { u.eff = v / 100; }, 1, 0, 200, 0, 'up_eff'));
   });
 
   b.appendChild(devSection('SUPPLIES · cost & max'));
@@ -1385,14 +1565,19 @@ function renderShopDev() {
     dh.textContent = u.ico + ' ' + u.name;
     b.appendChild(dh);
     g = devGrid(); b.appendChild(g);
-    num(g, 'Base cost', u, 'base', 5, 0, 9999, 0);
-    num(g, 'Max level', u, 'max', 1, 1, 99, 0);
+    num(g, 'Base cost', u, 'base', 5, 0, 9999, 0, 'sup_base');
+    num(g, 'Max level', u, 'max', 1, 1, 99, 0, 'sup_max');
   });
 
-  b.appendChild(devSection('WEAPONS · cost & mods'));
+  b.appendChild(devSection('WEAPONS · cost, levels & mods'));
   const MOD_LABELS = { proj: ['Projectiles', 1, 0, 99, 0], dmgMul: ['Damage ×', 0.05, 0, 99, 2],
     rateMul: ['Fire rate ×', 0.05, 0, 99, 2], pierce: ['Pierce', 1, 0, 99, 0],
-    spdMul: ['Bullet speed ×', 0.05, 0, 99, 2], spread: ['Spread', 0.01, 0, 1, 2] };
+    spdMul: ['Bullet speed ×', 0.05, 0, 99, 2], spread: ['Spread', 0.01, -0.5, 1, 2] };
+  const MOD_HELP = { proj: 'w_proj', dmgMul: 'w_dmgmul', rateMul: 'w_ratemul',
+    pierce: 'w_pierce', spdMul: 'w_spdmul', spread: 'w_spread' };
+  const LVL_LABELS = { proj: ['+Proj / lvl', 1, -5, 10, 0], dmgMul: ['+Dmg× / lvl', 0.01, -2, 5, 2],
+    rateMul: ['+Rate× / lvl', 0.01, -2, 5, 2], pierce: ['+Pierce / lvl', 1, -5, 10, 0],
+    spdMul: ['+Spd× / lvl', 0.01, -2, 5, 2], spread: ['+Spread / lvl', 0.005, -0.2, 0.2, 3] };
   Object.keys(WEAPONS).forEach((id) => {
     const w = WEAPONS[id];
     const dh = document.createElement('div');
@@ -1400,12 +1585,16 @@ function renderShopDev() {
     dh.textContent = w.ico + ' ' + w.name;
     b.appendChild(dh);
     g = devGrid(); b.appendChild(g);
-    num(g, 'Cost', w, 'cost', 25, 0, 99999, 0);
+    num(g, 'Cost', w, 'cost', 25, 0, 99999, 0, 'w_cost');
+    num(g, 'Level cost base', w, 'lvlCost', 10, 0, 99999, 0, 'w_lvlcost');
+    num(g, 'Max level', w, 'maxLvl', 1, 1, 10, 0, 'w_maxlvl');
     Object.keys(MOD_LABELS).forEach((k) => {
-      if (typeof w[k] === 'number') {
-        const L = MOD_LABELS[k];
-        num(g, L[0], w, k, L[1], L[2], L[3], L[4]);
-      }
+      const L = MOD_LABELS[k];
+      num(g, L[0], w.mods, k, L[1], L[2], L[3], L[4], MOD_HELP[k]);
+    });
+    Object.keys(LVL_LABELS).forEach((k) => {
+      const L = LVL_LABELS[k];
+      num(g, L[0], w.perLvl, k, L[1], L[2], L[3], L[4], 'w_plvl');
     });
   });
 }
@@ -1432,7 +1621,11 @@ el.menubtn.addEventListener('click', () => {
 el.storebtn.addEventListener('click', openStore);
 el.storeback.addEventListener('click', closeStore);
 el.devlogo.addEventListener('click', devLogoTap);
-el.devbtn.addEventListener('click', openDev);
+el.devbtn.addEventListener('click', () => openDev('menu'));
+el.pdevbtn.addEventListener('click', () => openDev('pause'));
+el.devhelpbtn.addEventListener('click', () => setHelp(!HELP_ON));
+el.shopdevhelpbtn.addEventListener('click', () => setHelp(!HELP_ON));
+el.helpclose.addEventListener('click', closeHelp);
 el.devback.addEventListener('click', closeDev);
 el.devreset.addEventListener('click', devResetAll);
 el.devrestart.addEventListener('click', () => {
@@ -1446,7 +1639,7 @@ el.shopdevback.addEventListener('click', closeShopDev);
 el.shopdevreset.addEventListener('click', shopDevReset);
 el.devlogo.textContent = '◈ v' + GAME_VERSION; // the badge is the real version
 try {
-  if (localStorage.getItem(DEV_KEY) === '1') el.devbtn.classList.remove('hidden');
+  if (localStorage.getItem(DEV_KEY) === '1') { el.devbtn.classList.remove('hidden'); el.pdevbtn.classList.remove('hidden'); }
   if (localStorage.getItem(SHOPDEV_KEY) === '1') el.shopdevbtn.classList.remove('hidden');
 } catch (e) {}
 el.resumebtn.addEventListener('click', togglePause);
@@ -2235,7 +2428,7 @@ if (window.visualViewport) {
 }
 
 // headless test hook
-window.__NV = { G, CFG, IN, META, WEAPONS, startGame, spawnEnemy, gainXP, damagePlayer, damageEnemy, rollUpgrades, applyUpgrade, fireNuke, update, draw, updateHUD, updateCamera, ETYPES, PBASE, SHOP, META_UPS, META_ITEMS, GAME_VERSION, devLogoTap, unlockDev, renderDev, devResetAll, openDev, devShopTap, unlockShopDev, renderShopDev, shopDevReset, openShopDev };
+window.__NV = { G, CFG, IN, META, WEAPONS, startGame, spawnEnemy, gainXP, damagePlayer, damageEnemy, rollUpgrades, applyUpgrade, fireNuke, update, draw, updateHUD, updateCamera, ETYPES, PBASE, SHOP, META_UPS, META_ITEMS, GAME_VERSION, devLogoTap, unlockDev, renderDev, devResetAll, openDev, devShopTap, unlockShopDev, renderShopDev, shopDevReset, openShopDev, wmod, setHelp, openHelp, closeHelp };
 
 if (window.location.hash.indexOf('autodemo') >= 0) {
   G.demo = true;
