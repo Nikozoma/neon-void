@@ -14,7 +14,7 @@ const dist2 = (ax, ay, bx, by) => { const dx = ax - bx, dy = ay - by; return dx 
 const pick = (arr) => arr[(Math.random() * arr.length) | 0];
 
 /* single source of truth for the game version — shown on the menu badge */
-const GAME_VERSION = '3.1';
+const GAME_VERSION = '3.2';
 
 /* ---------------- config ---------------- */
 const CFG = {
@@ -73,6 +73,8 @@ const STORY = {
   voidBossEvery: 75,     // seconds between void bosses
   ruptureHold: 8,        // spawn pause after the rupture (s)
   warRampT: 45,          // voidwar spawn pressure ramps 55% -> 100% over this many seconds
+  calmCracks: 14,       // decorative pre-void cracks in the calm phase (visual only, NOT tied to void count)
+  crackSpread: 70,      // crack size (world px) — small fractures scattered like deep-space faults
   smallW: 1200, smallH: 800,   // calm-phase arena (fully visible)
   bigW: 2200, bigH: 1500,      // post-rupture arena
 };
@@ -199,18 +201,12 @@ const cam = { x: CFG.world.w / 2, y: CFG.world.h / 2, zoom: CFG.camZoom };
 function viewHalf() {
   return { hw: W / (2 * cam.zoom), hh: H / (2 * cam.zoom) };
 }
-/* effective camera zoom: fit the small arena during the calm phase,
-   then ease back out to normal as the walls explode */
+/* effective camera zoom: the calm-phase fit is kept for the whole storyline —
+   the zoom distance stays identical before and after the voids open */
 function storyZoom() {
   const st = G.story;
   if (!st || st.phase === 'off') return CFG.camZoom;
-  if (st.phase === 'calm') return st.fitZoom;
-  if (st.phase === 'rupture') {
-    const k = clamp(st.ruptureT / 2.5, 0, 1);
-    const e = 1 - Math.pow(1 - k, 3);
-    return lerp(st.fitZoom, CFG.camZoom, e);
-  }
-  return CFG.camZoom;
+  return st.fitZoom;
 }
 function updateCamera() {
   cam.zoom = storyZoom();
@@ -248,8 +244,8 @@ function resize() {
   IN.aimBX = W - 104; IN.aimBY = H - 118;
   buildStars(); // rebuild menu starfield for new size
   buildStatic(); // rebuild cached vignette for new size
-  // keep the calm-phase arena fully visible after resize
-  if (G && G.story && G.story.phase === 'calm') {
+  // keep the storyline zoom consistent after resize, in any phase
+  if (G && G.story && STORY.on) {
     G.story.fitZoom = clamp(Math.min(W / STORY.smallW, H / STORY.smallH), 0.3, 2);
   }
   orientRefresh('resize');
@@ -586,16 +582,16 @@ function resetGame() {
     st.phase = 'calm';
     CFG.world.w = STORY.smallW; CFG.world.h = STORY.smallH;
     st.fitZoom = clamp(Math.min(W / STORY.smallW, H / STORY.smallH), 0.3, 2);
-    // tears form at random spots, away from the player's start —
-    // one tear per void per boss, so every tear becomes a void
-    for (let i = 0; i < STORY.bossesToClose; i++) {
+    // decorative pre-void cracks: small, abundant, NOT tied to the void count —
+    // the vibe of deep space fracturing all around you
+    for (let i = 0; i < STORY.calmCracks; i++) {
       let x = 0, y = 0, tries = 0;
       do {
         x = rand(140, STORY.smallW - 140);
         y = rand(140, STORY.smallH - 140);
         tries++;
       } while (tries < 20 && Math.hypot(x - STORY.smallW / 2, y - STORY.smallH / 2) < 260);
-      st.tears.push(genTear(x, y));
+      st.tears.push(genTear(x, y, STORY.crackSpread));
     }
   } else {
     CFG.world.w = STORY.bigW; CFG.world.h = STORY.bigH;
@@ -853,8 +849,15 @@ function updateSpawns(dt) {
       // calm phase: beginner types only (mites + dashers)
       const type = calm ? (Math.random() < 0.7 ? 'mite' : 'dasher') : pickType(t);
       if (openVoids && openVoids.length) {
-        const pos = voidSpawnPos(openVoids);
-        spawnEnemy(type, pos.x, pos.y, false, true); // void-touched, crawls out of a void
+        // void war: alternate — regulars pour in from the map edges,
+        // void-touched crawl out of the open voids themselves
+        if (i % 2 === 1) {
+          const pos = voidSpawnPos(openVoids);
+          spawnEnemy(type, pos.x, pos.y, false, true);
+        } else {
+          const pos = spawnEdge();
+          spawnEnemy(type, pos.x, pos.y, false, false);
+        }
       } else {
         spawnEnemy(type);
       }
@@ -905,6 +908,16 @@ function voidSpawnPos(open) {
     x: clamp(v.x + Math.cos(a) * d, 24, CFG.world.w - 24),
     y: clamp(v.y + Math.sin(a) * d, 24, CFG.world.h - 24),
   };
+}
+
+/* spawn point along a random edge of the map (regular enemies pour in from the rim) */
+function spawnEdge() {
+  const m = 50, w = CFG.world.w, h = CFG.world.h;
+  const side = irand(0, 3);
+  if (side === 0) return { x: rand(m, w - m), y: m };
+  if (side === 1) return { x: rand(m, w - m), y: h - m };
+  if (side === 2) return { x: m, y: rand(m, h - m) };
+  return { x: w - m, y: rand(m, h - m) };
 }
 
 /* ---------------- boss: WARDEN ---------------- */
@@ -1935,6 +1948,8 @@ function renderDev() {
   num(g, 'Void boss every (s)', STORY, 'voidBossEvery', 5, 10, 600, 0, 'story_bossevery');
   num(g, 'Rupture hold (s)', STORY, 'ruptureHold', 1, 0, 30, 0, 'story_hold');
   num(g, 'War ramp (s)', STORY, 'warRampT', 5, 0, 120, 0, 'story_wartramp');
+  num(g, 'Calm cracks', STORY, 'calmCracks', 1, 0, 40, 0, 'story_cracks');
+  num(g, 'Crack spread', STORY, 'crackSpread', 5, 20, 200, 0, 'story_crackspread');
 
   // ---- hard mode: void-plus loop scaling (next run) ----
   b.appendChild(devSection('HARD MODE · loop scaling, applies on run start'));
@@ -2186,10 +2201,11 @@ function tearPts(x, y, spread) {
   }
   return pts;
 }
-function genTear(x, y) {
-  const main = tearPts(x, y, 130);
+function genTear(x, y, spread) {
+  const sp = spread || 130;
+  const main = tearPts(x, y, sp);
   const b0 = main[2 + irand(0, 2)];
-  return { pts: main, branch: tearPts(b0.x, b0.y, 70), seed: rand(0, TAU) };
+  return { pts: main, branch: tearPts(b0.x, b0.y, sp * 0.55), seed: rand(0, TAU) };
 }
 
 function updateStory(dt) {
@@ -2246,12 +2262,13 @@ function startRupture() {
   st.phase = 'rupture';
   st.ruptureT = 0;
   st.warT = 0;
-  // tears rip open into voids
-  st.voids = st.tears.map(tr => ({
-    x: tr.pts[0].x, y: tr.pts[0].y, r: rand(58, 80),
+  // voids tear open scattered across the FULL post-rupture map —
+  // spread out with min separation, kept away from the player's position
+  st.voids = scatterVoids(STORY.bossesToClose).map(p => ({
+    x: p.x, y: p.y, r: rand(58, 80),
     seed: rand(0, TAU), open: 0, sealed: false,
   }));
-  st.tears = [];
+  st.tears = []; // the decorative cracks are gone — the real voids are here
   // the blast wipes the field (full kill rewards — a celebratory clear)
   for (const e of G.enemies.slice()) {
     if (e.boss) damageEnemy(e, 1500, 0, 0, false);
@@ -2272,6 +2289,21 @@ function startRupture() {
     spawnParts(x, y, pick(['#46f6ff', '#ffffff', '#b14dff']), 1, rand(120, 380), rand(0.6, 1.4), rand(3, 6));
   }
   updateHUD();
+}
+
+/* scatter n void positions across the big map: min separation from each other
+   and from the player, so the 5 voids spread out over the whole play area */
+function scatterVoids(n) {
+  const pts = [];
+  let guard = 0;
+  while (pts.length < n && guard++ < 400) {
+    const x = rand(200, STORY.bigW - 200), y = rand(200, STORY.bigH - 200);
+    if (Math.hypot(x - STORY.bigW / 2, y - STORY.bigH / 2) < 400) continue; // not on the player
+    if (pts.some(p => Math.hypot(p.x - x, p.y - y) < 520)) continue;        // spread out
+    pts.push({ x, y });
+  }
+  while (pts.length < n) pts.push({ x: rand(220, STORY.bigW - 220), y: rand(220, STORY.bigH - 220) });
+  return pts;
 }
 
 /* a WARDEN emerges from a random open void; killing it seals that void */
