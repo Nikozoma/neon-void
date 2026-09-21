@@ -134,6 +134,15 @@ h2.gold { color:#fff3d8; text-shadow:0 0 14px #ffb454, 0 0 50px rgba(255,180,84,
 .storepanel h3.item::before, .storepanel h3.item::after { background:linear-gradient(90deg,transparent,rgba(255,215,106,.5),transparent); }
 .storepanel h3.wpn { color:#ff4dd9; }
 .storepanel h3.wpn::before, .storepanel h3.wpn::after { background:linear-gradient(90deg,transparent,rgba(255,77,217,.5),transparent); }
+.storepanel h3.slot { color:#b2ff59; }
+.storepanel h3.slot::before, .storepanel h3.slot::after { background:linear-gradient(90deg,transparent,rgba(178,255,89,.5),transparent); }
+
+/* skill drops page: help reference + loadout picker */
+#skillgrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:8px; margin:10px 0 4px; }
+.scard { position:relative; max-width:none; min-height:132px; }
+.scard.sel { border-color:rgba(178,255,89,.9); background:rgba(178,255,89,.08);
+  box-shadow:0 0 16px rgba(178,255,89,.18); }
+.scard .tick { position:absolute; top:6px; right:10px; color:#b2ff59; font-weight:800; font-size:16px; }
 #storeups, #storeitems, #storeweapons { display:grid; gap:8px; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); }
 .srow { display:flex; align-items:center; gap:10px; padding:8px 10px; margin-bottom:0;
   background:linear-gradient(180deg,rgba(12,22,48,.95),rgba(8,14,32,.95));
