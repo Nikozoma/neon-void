@@ -24,6 +24,7 @@
       <div id="hpbar"><div id="hpfill"></div><span id="hptext"></span></div>
       <div id="xpbar"><div id="xpfill"></div></div>
       <div id="lvltext">LV 1</div>
+      <div id="nukeline">☢ ×1</div>
     </div>
     <div id="topcenter">
       <div id="timer">0:00</div>
@@ -44,10 +45,27 @@
       <div class="howto">
         <div><span class="k">◀ left thumb</span> move</div>
         <div><span class="k">▶ right thumb</span> aim + fire</div>
-        <div><span class="k">◉ dash</span> burst of speed + brief invulnerability</div>
+        <div><span class="k">☢ nuke</span> panic button — clears the map</div>
       </div>
       <button id="startbtn" class="bigbtn">ENTER THE VOID</button>
+      <button id="storebtn" class="ghostbtn">LOADOUT / STORE</button>
+      <p id="ptsline" class="pts"></p>
       <p id="bestline" class="best"></p>
+    </div>
+  </div>
+
+  <!-- Store -->
+  <div id="store" class="overlay hidden">
+    <div class="panel storepanel">
+      <h2>VOID MARKET</h2>
+      <p id="storepts" class="pts big"></p>
+      <h3>PERMANENT UPGRADES</h3>
+      <div id="storeups"></div>
+      <h3>SUPPLIES</h3>
+      <div id="storeitems"></div>
+      <h3>WEAPONS</h3>
+      <div id="storeweapons"></div>
+      <button id="storeback" class="bigbtn">BACK</button>
     </div>
   </div>
 
