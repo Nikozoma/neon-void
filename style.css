@@ -139,6 +139,8 @@ h2.gold { color:#fff3d8; text-shadow:0 0 14px #ffb454, 0 0 50px rgba(255,180,84,
 
 /* skill drops page: help reference + loadout picker */
 #skillgrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:8px; margin:10px 0 4px; }
+#enemygrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:8px; margin:10px 0 4px; }
+#enemygrid .st { font-size:11px; color:#8fd8ff; margin:2px 0 6px; letter-spacing:1px; }
 .scard { position:relative; max-width:none; min-height:132px; }
 .scard.sel { border-color:rgba(178,255,89,.9); background:rgba(178,255,89,.08);
   box-shadow:0 0 16px rgba(178,255,89,.18); }
@@ -172,12 +174,15 @@ h2.gold { color:#fff3d8; text-shadow:0 0 14px #ffb454, 0 0 50px rgba(255,180,84,
 .storefoot #shopdevbtn { flex:1; margin:12px 0 0; padding:10px; font-size:13px;
   border-color:rgba(255,77,217,.55); color:#ff9eef; }
 
-/* ---------- Main menu: show the canvas backdrop, use the full width ---------- */
-#menu { background:transparent; }
-#menu .panel.menupanel { background:rgba(6,10,28,.78); width:min(94vw,900px); max-width:min(94vw,900px); padding:18px 30px; position:relative; }
+/* ---------- Main menu: fill the available space, no scroll box ---------- */
+#menu { background:transparent; padding:0; }
+#menu .panel.menupanel { background:rgba(6,10,28,.78); width:100%; max-width:100%; height:100%; max-height:100%;
+  overflow:visible; padding:18px 30px; position:relative;
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  border-radius:0; border-left:none; border-right:none; }
 .menupanel h1 { font-size:clamp(28px,5.5vw,44px); letter-spacing:6px; }
 .menupanel .tag { margin:2px 0 12px; font-size:11px; }
-.menugrid { display:flex; align-items:center; justify-content:center; gap:40px; }
+.menugrid { display:flex; align-items:center; justify-content:center; gap:40px; flex-wrap:wrap; width:100%; }
 .menugrid .howto { margin:0; font-size:13px; line-height:2.1; flex:0 0 auto; }
 .menuactions { display:flex; flex-direction:column; gap:8px; width:min(300px,30vw); flex:0 0 auto; }
 .menuactions .bigbtn { margin:0; padding:13px; font-size:15px; }
