@@ -21,16 +21,35 @@ const CFG = {
   maxFloats: 40,
   world: { w: 2200, h: 1500 },  // arena is ~2.5-3x a phone viewport
   camZoom: 0.85,                // zoomed out slightly
-  xpNeed: (lvl) => Math.round(8 * Math.pow(lvl, 1.42)),
-  spawnInterval: (t) => clamp(1.15 - t * 0.0058, 0.26, 1.15),
-  batchSize: (t) => 1 + Math.floor(t / 55),
-  hpMul: (t) => 1 + t / 70,
-  spdMul: (t) => 1 + Math.min(0.45, t / 280),
-  dmgMul: (t) => 1 + t / 240,
-  eliteEvery: 42,          // seconds between elites (after 50s)
-  bossEvery: 150,          // seconds between bosses
+  // ---- dev-tunable pacing params (functions below derive from these) ----
+  spawnBase: 1.15,              // spawn interval at t=0 (s)
+  spawnDecay: 0.0058,           // interval shrink per second
+  spawnMin: 0.26,               // fastest spawn interval (s)
+  batchEvery: 55,               // +1 enemy per batch every N seconds
+  hpRate: 70,                   // enemy HP doubles every N seconds
+  spdRate: 280,                 // enemy speed ramps over N seconds
+  spdCap: 0.45,                 // max speed growth (+45%)
+  dmgRate: 240,                 // enemy damage doubles every N seconds
+  xpBase: 8, xpPow: 1.42,       // xpNeed = xpBase * lvl^xpPow
+  eliteEvery: 42,               // seconds between elites
+  firstElite: 50,               // first elite at this time (s)
+  bossEvery: 150,               // seconds between bosses
   firstBoss: 150,
+  eliteNukeCh: 0.22,            // elite nuke drop chance
+  eliteHealCh: 0.35,            // elite heal drop chance
 };
+CFG.xpNeed = (lvl) => Math.round(CFG.xpBase * Math.pow(lvl, CFG.xpPow));
+CFG.spawnInterval = (t) => clamp(CFG.spawnBase - t * CFG.spawnDecay, CFG.spawnMin, CFG.spawnBase);
+CFG.batchSize = (t) => 1 + Math.floor(t / CFG.batchEvery);
+CFG.hpMul = (t) => 1 + t / CFG.hpRate;
+CFG.spdMul = (t) => 1 + Math.min(CFG.spdCap, t / CFG.spdRate);
+CFG.dmgMul = (t) => 1 + t / CFG.dmgRate;
+// numeric params the dev menu can reset
+const DEVPARAMS = ['maxEnemies', 'spawnBase', 'spawnDecay', 'spawnMin', 'batchEvery',
+  'hpRate', 'spdRate', 'spdCap', 'dmgRate', 'xpBase', 'xpPow',
+  'eliteEvery', 'firstElite', 'bossEvery', 'firstBoss', 'eliteNukeCh', 'eliteHealCh'];
+const CFG_DEFAULTS = {};
+DEVPARAMS.forEach((k) => { CFG_DEFAULTS[k] = CFG[k]; });
 
 /* palette */
 const COL = {
@@ -381,13 +400,21 @@ function applyMeta(p) {
   }
 }
 
+// dev-tunable player base stats (applied on run start)
+const PBASE = {
+  hp: 100, speed: 300, fireRate: 4.5, dmg: 12, proj: 1, pierce: 0,
+  crit: 0, bulletSpeed: 760, magnet: 95, seek: 1, nukes: 1, shields: 0,
+};
+const PBASE_DEFAULTS = Object.assign({}, PBASE);
+
 function newPlayer() {
   const p = {
     x: CFG.world.w / 2, y: CFG.world.h / 2, vx: 0, vy: 0, r: 16 * S + 8,
-    hp: 100, maxhp: 100,
-    speed: 300, fireRate: 4.5, dmg: 12, proj: 1, pierce: 0,
-    crit: 0, bulletSpeed: 760, magnet: 95, siphon: 0,
-    seek: 1, nukes: 1, shields: 0, spreadBonus: 0,
+    hp: PBASE.hp, maxhp: PBASE.hp,
+    speed: PBASE.speed, fireRate: PBASE.fireRate, dmg: PBASE.dmg,
+    proj: PBASE.proj, pierce: PBASE.pierce,
+    crit: PBASE.crit, bulletSpeed: PBASE.bulletSpeed, magnet: PBASE.magnet, siphon: 0,
+    seek: PBASE.seek, nukes: PBASE.nukes, shields: PBASE.shields, spreadBonus: 0,
     fireT: 0,
     faceX: 1, faceY: 0, aimX: 1, aimY: 0,
     inv: 0, alive: true,
@@ -405,7 +432,7 @@ function resetGame() {
   G.enemies.length = 0; G.parts.length = 0;
   G.pickups.length = 0; G.floats.length = 0; G.shocks.length = 0;
   G.flash = 0;
-  G.spawnT = 1.2; G.eliteT = 50; G.bossT = CFG.firstBoss;
+  G.spawnT = 1.2; G.eliteT = CFG.firstElite; G.bossT = CFG.firstBoss;
   G.boss = null; G.bossCount = 0; G.upgrades = {};
   IN.nukeQueued = false;
 }
@@ -575,6 +602,7 @@ const ETYPES = {
   spitter:{ hp: 40,  spd: 120, dmg: 10, r: 15, score: 30, xp: 3, color: COL.spitter, shape: 4 },
   tank:   { hp: 150, spd: 72,  dmg: 20, r: 24, score: 60, xp: 6, color: COL.tank,    shape: 6 },
 };
+const ETYPES_DEFAULTS = JSON.parse(JSON.stringify(ETYPES));
 
 /* spawn point on a ring around the camera, just outside the visible view */
 function spawnRing(margin) {
@@ -776,8 +804,8 @@ function killEnemy(e) {
     toast('WARDEN DESTROYED  +1500');
   } else if (e.elite) {
     for (let i = 0; i < 5; i++) dropShard(e.x, e.y, e.xp / 5);
-    if (Math.random() < 0.35) dropHeal(e.x, e.y, 25);
-    if (Math.random() < 0.22) dropNuke(e.x, e.y);
+    if (Math.random() < CFG.eliteHealCh) dropHeal(e.x, e.y, 25);
+    if (Math.random() < CFG.eliteNukeCh) dropNuke(e.x, e.y);
     G.hitstop = 0.12;
     addFloat(e.x, e.y - 30, '+' + e.score, COL.elite, 17);
   } else {
@@ -863,7 +891,8 @@ const el = {};
  'hpbar', 'xpfill', 'lvltext', 'nukeline', 'timer', 'score', 'bossbar', 'bossfill',
  'stats', 'newbest', 'bestline', 'ptsline', 'toast', 'warnbanner',
  'store', 'storebtn', 'storeback', 'storepts', 'storeups', 'storeitems', 'storeweapons',
- 'startbtn', 'retrybtn', 'menubtn', 'resumebtn', 'quitbtn', 'pausebtn', 'mutebtn'
+ 'startbtn', 'retrybtn', 'menubtn', 'resumebtn', 'quitbtn', 'pausebtn', 'mutebtn',
+ 'devlogo', 'devbtn', 'devmenu', 'devbody', 'devrestart', 'devreset', 'devback'
 ].forEach(id => { el[id] = document.getElementById(id); });
 
 function toast(msg, ms) {
@@ -1078,6 +1107,190 @@ function closeStore() {
   refreshMenuPts();
 }
 
+/* ============================================================
+   DEV CONSOLE — hidden tuner menu
+   Access: tap the tiny version badge on the main menu 7x.
+   Taps 1-3 silent, tap 4/5/6 count down, tap 7 unlocks.
+   ============================================================ */
+const DEV_KEY = 'neonvoid_dev';
+let devTaps = 0, devTapLast = 0;
+
+function devLogoTap() {
+  const now = performance.now();
+  if (now - devTapLast > 1400) devTaps = 0; // taps must be in a row
+  devTapLast = now;
+  devTaps++;
+  if (devTaps === 4) toast('UNLOCK IN 3');
+  else if (devTaps === 5) toast('UNLOCK IN 2');
+  else if (devTaps === 6) toast('UNLOCK IN 1');
+  else if (devTaps >= 7) {
+    devTaps = 0;
+    unlockDev();
+    toast('UNLOCKED');
+    AU.click();
+  }
+}
+
+function unlockDev() {
+  el.devbtn.classList.remove('hidden');
+  try { localStorage.setItem(DEV_KEY, '1'); } catch (e) {}
+}
+
+function openDev() {
+  AU.click();
+  renderDev();
+  el.menu.classList.add('hidden');
+  el.devmenu.classList.remove('hidden');
+}
+function closeDev() {
+  AU.click();
+  el.devmenu.classList.add('hidden');
+  el.menu.classList.remove('hidden');
+  refreshMenuPts();
+}
+
+function devNum(label, get, set, step, min, max, dec) {
+  const row = document.createElement('div');
+  row.className = 'devrow';
+  const lab = document.createElement('label');
+  lab.textContent = label;
+  const val = document.createElement('span');
+  val.className = 'v';
+  const fmt = (v) => (dec > 0 ? v.toFixed(dec) : String(Math.round(v)));
+  const upd = () => { val.textContent = fmt(get()); };
+  const minus = document.createElement('button');
+  minus.textContent = '−';
+  const plus = document.createElement('button');
+  plus.textContent = '+';
+  minus.addEventListener('click', () => { set(clamp(get() - step, min, max)); upd(); AU.click(); });
+  plus.addEventListener('click', () => { set(clamp(get() + step, min, max)); upd(); AU.click(); });
+  upd();
+  row.append(lab, minus, val, plus);
+  return row;
+}
+
+function devSection(title) {
+  const h = document.createElement('div');
+  h.className = 'devsec';
+  h.textContent = title;
+  return h;
+}
+function devGrid() {
+  const g = document.createElement('div');
+  g.className = 'devgrid';
+  return g;
+}
+
+function renderDev() {
+  const b = el.devbody;
+  b.innerHTML = '';
+  const num = (parent, label, obj, key, step, min, max, dec) =>
+    parent.appendChild(devNum(label, () => obj[key], (v) => { obj[key] = v; }, step, min, max, dec));
+
+  // ---- spawning (live) ----
+  b.appendChild(devSection('SPAWNING · applies live'));
+  let g = devGrid(); b.appendChild(g);
+  num(g, 'Max enemies', CFG, 'maxEnemies', 5, 1, 500, 0);
+  num(g, 'Spawn interval base (s)', CFG, 'spawnBase', 0.05, 0.05, 5, 2);
+  num(g, 'Interval shrink /s', CFG, 'spawnDecay', 0.0005, 0, 0.05, 4);
+  num(g, 'Spawn interval min (s)', CFG, 'spawnMin', 0.05, 0.05, 5, 2);
+  num(g, 'Batch +1 every (s)', CFG, 'batchEvery', 1, 5, 300, 0);
+  num(g, 'Elite every (s)', CFG, 'eliteEvery', 1, 5, 600, 0);
+  num(g, 'First elite at (s)', CFG, 'firstElite', 1, 0, 600, 0);
+  num(g, 'Boss every (s)', CFG, 'bossEvery', 5, 10, 1200, 0);
+  num(g, 'First boss at (s)', CFG, 'firstBoss', 5, 0, 1200, 0);
+
+  // ---- enemy scaling (live) ----
+  b.appendChild(devSection('ENEMY SCALING · applies live'));
+  g = devGrid(); b.appendChild(g);
+  num(g, 'HP doubles every (s)', CFG, 'hpRate', 1, 5, 900, 0);
+  num(g, 'Speed ramps over (s)', CFG, 'spdRate', 5, 20, 1800, 0);
+  num(g, 'Speed growth cap', CFG, 'spdCap', 0.05, 0, 2, 2);
+  num(g, 'Damage doubles every (s)', CFG, 'dmgRate', 5, 20, 1800, 0);
+
+  // ---- enemy types (new spawns) ----
+  b.appendChild(devSection('ENEMY TYPES · applies to newly spawned'));
+  Object.keys(ETYPES).forEach((t) => {
+    const dh = document.createElement('div');
+    dh.className = 'devtype';
+    dh.textContent = t.toUpperCase();
+    b.appendChild(dh);
+    g = devGrid(); b.appendChild(g);
+    const E = ETYPES[t];
+    num(g, 'HP', E, 'hp', 1, 1, 9999, 0);
+    num(g, 'Speed', E, 'spd', 5, 10, 1200, 0);
+    num(g, 'Damage', E, 'dmg', 1, 0, 999, 0);
+    num(g, 'XP', E, 'xp', 1, 0, 500, 0);
+    num(g, 'Score', E, 'score', 5, 0, 5000, 0);
+  });
+
+  // ---- drops (live) ----
+  b.appendChild(devSection('DROPS · applies live'));
+  g = devGrid(); b.appendChild(g);
+  num(g, 'Elite nuke chance', CFG, 'eliteNukeCh', 0.01, 0, 1, 2);
+  num(g, 'Elite heal chance', CFG, 'eliteHealCh', 0.01, 0, 1, 2);
+
+  // ---- player base (next run) ----
+  b.appendChild(devSection('PLAYER BASE · applies on run start'));
+  g = devGrid(); b.appendChild(g);
+  num(g, 'Max hull', PBASE, 'hp', 5, 1, 5000, 0);
+  num(g, 'Move speed', PBASE, 'speed', 10, 50, 1500, 0);
+  num(g, 'Fire rate /s', PBASE, 'fireRate', 0.25, 0.5, 30, 2);
+  num(g, 'Bullet damage', PBASE, 'dmg', 1, 1, 999, 0);
+  num(g, 'Projectiles', PBASE, 'proj', 1, 1, 12, 0);
+  num(g, 'Pierce', PBASE, 'pierce', 1, 0, 12, 0);
+  num(g, 'Bullet speed', PBASE, 'bulletSpeed', 20, 100, 4000, 0);
+  num(g, 'Magnet radius', PBASE, 'magnet', 5, 10, 900, 0);
+  num(g, 'Homing stage', PBASE, 'seek', 1, 0, 5, 0);
+  num(g, 'Crit chance', PBASE, 'crit', 0.05, 0, 1, 2);
+  num(g, 'Starting nukes', PBASE, 'nukes', 1, 0, 9, 0);
+  num(g, 'Starting shields', PBASE, 'shields', 1, 0, 9, 0);
+
+  // ---- progression (next run) ----
+  b.appendChild(devSection('PROGRESSION · applies on run start'));
+  g = devGrid(); b.appendChild(g);
+  num(g, 'XP base', CFG, 'xpBase', 0.5, 1, 200, 1);
+  num(g, 'XP power', CFG, 'xpPow', 0.01, 1, 3, 2);
+
+  // ---- points ----
+  b.appendChild(devSection('POINTS · applies immediately'));
+  g = devGrid(); b.appendChild(g);
+  const prow = document.createElement('div');
+  prow.className = 'devrow';
+  const plab = document.createElement('label');
+  plab.textContent = 'Points';
+  const pval = document.createElement('span');
+  pval.className = 'v';
+  const pstep = (d) => {
+    META.pts = Math.max(0, META.pts + d);
+    saveMeta(); refreshMenuPts(); pval.textContent = META.pts.toLocaleString('en-US');
+    AU.click();
+  };
+  const mkp = (t, d) => {
+    const btn = document.createElement('button');
+    btn.textContent = t; btn.style.width = 'auto'; btn.style.padding = '0 8px';
+    btn.addEventListener('click', () => pstep(d));
+    return btn;
+  };
+  pval.textContent = META.pts.toLocaleString('en-US');
+  prow.append(plab, mkp('−1K', -1000), pval, mkp('+1K', 1000), mkp('+10K', 10000));
+  g.appendChild(prow);
+}
+
+function devResetAll() {
+  DEVPARAMS.forEach((k) => { CFG[k] = CFG_DEFAULTS[k]; });
+  Object.keys(ETYPES).forEach((t) => {
+    Object.keys(ETYPES_DEFAULTS[t]).forEach((k) => {
+      if (typeof ETYPES_DEFAULTS[t][k] === 'number') ETYPES[t][k] = ETYPES_DEFAULTS[t][k];
+    });
+  });
+  Object.assign(PBASE, PBASE_DEFAULTS);
+  renderDev();
+  refreshMenuPts();
+  toast('DEFAULTS RESTORED');
+  AU.click();
+}
+
 el.startbtn.addEventListener('click', startGame);
 el.retrybtn.addEventListener('click', startGame);
 el.menubtn.addEventListener('click', () => {
@@ -1090,6 +1303,18 @@ el.menubtn.addEventListener('click', () => {
 });
 el.storebtn.addEventListener('click', openStore);
 el.storeback.addEventListener('click', closeStore);
+el.devlogo.addEventListener('click', devLogoTap);
+el.devbtn.addEventListener('click', openDev);
+el.devback.addEventListener('click', closeDev);
+el.devreset.addEventListener('click', devResetAll);
+el.devrestart.addEventListener('click', () => {
+  AU.click();
+  el.devmenu.classList.add('hidden');
+  startGame();
+});
+try {
+  if (localStorage.getItem(DEV_KEY) === '1') el.devbtn.classList.remove('hidden');
+} catch (e) {}
 el.resumebtn.addEventListener('click', togglePause);
 el.quitbtn.addEventListener('click', () => {
   AU.click();
@@ -1772,7 +1997,7 @@ refreshMenuPts();
 window.addEventListener('blur', () => { IN.keys = {}; });
 
 // headless test hook
-window.__NV = { G, CFG, IN, META, WEAPONS, startGame, spawnEnemy, gainXP, damagePlayer, damageEnemy, rollUpgrades, applyUpgrade, fireNuke, update, draw, updateHUD, updateCamera, ETYPES };
+window.__NV = { G, CFG, IN, META, WEAPONS, startGame, spawnEnemy, gainXP, damagePlayer, damageEnemy, rollUpgrades, applyUpgrade, fireNuke, update, draw, updateHUD, updateCamera, ETYPES, PBASE, devLogoTap, unlockDev, renderDev, devResetAll, openDev };
 
 if (window.location.hash.indexOf('autodemo') >= 0) {
   G.demo = true;
