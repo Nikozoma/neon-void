@@ -14,7 +14,7 @@ const dist2 = (ax, ay, bx, by) => { const dx = ax - bx, dy = ay - by; return dx 
 const pick = (arr) => arr[(Math.random() * arr.length) | 0];
 
 /* single source of truth for the game version — shown on the menu badge */
-const GAME_VERSION = '2.4';
+const GAME_VERSION = '2.5';
 
 /* ---------------- config ---------------- */
 const CFG = {
@@ -196,6 +196,7 @@ function resize() {
   IN.aimBX = W - 104; IN.aimBY = H - 118;
   buildStars(); // rebuild menu starfield for new size
   buildStatic(); // rebuild cached vignette for new size
+  orientRefresh('resize');
 }
 window.addEventListener('resize', resize);
 window.addEventListener('orientationchange', () => setTimeout(resize, 120));
@@ -911,7 +912,8 @@ const el = {};
  'store', 'storebtn', 'storeback', 'storepts', 'storeups', 'storeitems', 'storeweapons',
  'startbtn', 'retrybtn', 'menubtn', 'resumebtn', 'quitbtn', 'pausebtn', 'mutebtn',
  'devlogo', 'devbtn', 'devmenu', 'devbody', 'devrestart', 'devreset', 'devback',
- 'shopdevbtn', 'shopdev', 'shopdevbody', 'shopdevback', 'shopdevreset'
+ 'shopdevbtn', 'shopdev', 'shopdevbody', 'shopdevback', 'shopdevreset',
+ 'orientgate', 'gatetitle', 'gatebody', 'gatehelp'
 ].forEach(id => { el[id] = document.getElementById(id); });
 
 function toast(msg, ms) {
@@ -2085,6 +2087,92 @@ function draw() {
 }
 
 /* ============================================================
+   ORIENTATION LIFECYCLE — browser-phone fullscreen cycle
+   (same pattern as Blade_Box_Arena_Agent / lulustale)
+   Portrait  -> blocking gate: "turn phone sideways"
+   Landscape -> fullscreen + landscape lock
+   Back to portrait -> exit fullscreen, gate returns
+   Only active in a phone browser tab; bypassed in the
+   installed PWA and on desktop.
+   ============================================================ */
+const ORIENT = {
+  state: 'bypass',   // bypass | gate | active | interrupt
+  entered: false,    // true once landscape play has started
+  get blocked() { return this.state === 'gate' || this.state === 'interrupt'; },
+};
+function orientIsStandalone() {
+  try {
+    return matchMedia('(display-mode: standalone)').matches ||
+           matchMedia('(display-mode: fullscreen)').matches ||
+           navigator.standalone === true;
+  } catch (e) { return false; }
+}
+function orientIsPhone() {
+  const shortSide = Math.min(window.innerWidth, window.innerHeight);
+  let coarse = false;
+  try { coarse = matchMedia('(pointer: coarse)').matches; } catch (e) {}
+  return shortSide <= 560 && (coarse || (navigator.maxTouchPoints || 0) > 0);
+}
+function orientEligible() { return !orientIsStandalone() && orientIsPhone(); }
+function orientIsPortrait() { return window.innerHeight > window.innerWidth; }
+function orientResetInput() {
+  IN.mActive = false; IN.aActive = false; IN.nukeQueued = false;
+  IN.mX = 0; IN.mY = 0; IN.aX = 0; IN.aY = 0; IN.keys = {};
+}
+async function orientLockLandscape() {
+  try { await screen.orientation.lock('landscape'); }
+  catch (e) { /* fullscreen precondition or platform policy */ }
+}
+async function orientEnterFullscreen() {
+  if (document.fullscreenElement) { orientLockLandscape(); return; }
+  const t = document.documentElement;
+  if (!t.requestFullscreen || document.fullscreenEnabled === false) { orientLockLandscape(); return; }
+  try { await t.requestFullscreen({ navigationUI: 'hide' }); }
+  catch (e) { /* no gesture yet — retry on next tap */ }
+  orientLockLandscape();
+}
+async function orientExitFullscreen() {
+  try { screen.orientation.unlock(); } catch (e) {}
+  if (document.fullscreenElement && document.exitFullscreen) {
+    try { await document.exitFullscreen(); } catch (e) {}
+  }
+}
+function orientSetGate(title, body, help) {
+  el.gatetitle.textContent = title;
+  el.gatebody.textContent = body;
+  el.gatehelp.textContent = help;
+}
+function orientRefresh(reason) {
+  if (!orientEligible()) {
+    if (ORIENT.state !== 'bypass') {
+      ORIENT.state = 'bypass';
+      ORIENT.entered = false;
+      el.orientgate.classList.add('hidden');
+    }
+    return;
+  }
+  if (orientIsPortrait()) {
+    ORIENT.state = ORIENT.entered ? 'interrupt' : 'gate';
+    if (ORIENT.state === 'interrupt') {
+      orientSetGate('PAUSED', 'Landscape gameplay is paused.',
+        'Turn your phone sideways to continue.');
+    } else {
+      orientSetGate('TURN PHONE SIDEWAYS', 'Neon Void is built for landscape play.',
+        'Turn your phone sideways to play.');
+    }
+    orientResetInput();
+    el.orientgate.classList.remove('hidden');
+    orientExitFullscreen();
+    return;
+  }
+  // landscape — game on
+  ORIENT.entered = true;
+  ORIENT.state = 'active';
+  el.orientgate.classList.add('hidden');
+  orientEnterFullscreen();
+}
+
+/* ============================================================
    MAIN LOOP
    ============================================================ */
 let lastT = 0, acc = 0, hudT = 0;
@@ -2094,6 +2182,9 @@ function frame(now) {
   let dt = (now - lastT) / 1000;
   lastT = now;
   if (dt > 0.1) dt = 0.1;
+
+  // orientation gate: freeze gameplay while the rotate prompt is up
+  if (ORIENT.blocked) { acc = 0; draw(); return; }
 
   if (G.hitstop > 0) {
     G.hitstop -= dt;
@@ -2126,7 +2217,22 @@ function frame(now) {
    ============================================================ */
 resize();
 refreshMenuPts();
+orientRefresh('start');
 window.addEventListener('blur', () => { IN.keys = {}; });
+// fullscreen retry needs a user gesture — any tap while landscape re-attempts it
+document.addEventListener('pointerdown', () => {
+  if (ORIENT.state === 'active' && orientEligible() && !orientIsPortrait() && !document.fullscreenElement) {
+    orientEnterFullscreen();
+  }
+});
+window.addEventListener('orientationchange', () => {
+  orientRefresh('orientationchange');
+  setTimeout(() => orientRefresh('orientation-settled'), 120);
+});
+document.addEventListener('fullscreenchange', () => orientRefresh('fullscreenchange'));
+if (window.visualViewport) {
+  visualViewport.addEventListener('resize', () => orientRefresh('viewport'));
+}
 
 // headless test hook
 window.__NV = { G, CFG, IN, META, WEAPONS, startGame, spawnEnemy, gainXP, damagePlayer, damageEnemy, rollUpgrades, applyUpgrade, fireNuke, update, draw, updateHUD, updateCamera, ETYPES, PBASE, SHOP, META_UPS, META_ITEMS, GAME_VERSION, devLogoTap, unlockDev, renderDev, devResetAll, openDev, devShopTap, unlockShopDev, renderShopDev, shopDevReset, openShopDev };
