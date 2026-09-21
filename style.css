@@ -180,3 +180,23 @@ h2.red { color:#ffdfe8; text-shadow:0 0 14px #ff4d6d; }
 .devrow button:active { background:rgba(178,255,89,.25); }
 .devactions { display:flex; gap:8px; margin-top:14px; }
 .devactions .bigbtn, .devactions .ghostbtn { margin:0; padding:10px; font-size:13px; }
+
+/* orientation gate — phone browser fullscreen cycle */
+#orientgate { z-index:50; background:rgba(2,6,18,.96); }
+.gatepanel { text-align:center; padding:24px; max-width:420px; }
+.gatepanel h1 { font-size:22px; letter-spacing:5px; color:#27e6ff;
+  text-shadow:0 0 18px rgba(39,230,255,.7); margin:0 0 10px; }
+.gatepanel p { font-size:14px; color:#cfe9ff; margin:6px 0; }
+.gatepanel .gatehelp { font-size:12px; letter-spacing:2px; color:#8fd8ff; opacity:.85; }
+.gatephone { width:36px; height:64px; border:3px solid #27e6ff; border-radius:9px;
+  margin:0 auto 22px; position:relative;
+  box-shadow:0 0 18px rgba(39,230,255,.55), inset 0 0 10px rgba(39,230,255,.25);
+  animation:gatespin 2.4s ease-in-out infinite; }
+.gatephone::after { content:''; position:absolute; bottom:6px; left:50%;
+  transform:translateX(-50%); width:7px; height:7px; border-radius:50%;
+  background:#27e6ff; box-shadow:0 0 8px rgba(39,230,255,.9); }
+@keyframes gatespin {
+  0%, 18% { transform:rotate(0deg); }
+  48%, 72% { transform:rotate(-90deg); }
+  100% { transform:rotate(-90deg); }
+}
