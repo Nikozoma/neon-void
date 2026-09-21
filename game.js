@@ -14,7 +14,7 @@ const dist2 = (ax, ay, bx, by) => { const dx = ax - bx, dy = ay - by; return dx 
 const pick = (arr) => arr[(Math.random() * arr.length) | 0];
 
 /* single source of truth for the game version — shown on the menu badge */
-const GAME_VERSION = '3.4';
+const GAME_VERSION = '3.5';
 
 /* ---------------- config ---------------- */
 const CFG = {
@@ -1174,7 +1174,7 @@ const el = {};
  'enemies', 'enemiesbtn', 'penemiesbtn', 'enemygrid', 'enemiesback',
  'startbtn', 'retrybtn', 'menubtn', 'resumebtn', 'quitbtn', 'pausebtn', 'mutebtn',
  'devlogo', 'devbtn', 'devmenu', 'devbody', 'devrestart', 'devreset', 'devback',
- 'devhub', 'hubrun', 'hublive', 'hubstore', 'hubclose',
+ 'devhub', 'hubrun', 'hublive', 'hubstore', 'hubwipe', 'hubclose',
  'liveops', 'liveopsbody', 'liveopsback',
 'devhelpbtn', 'shopdevhelpbtn', 'helpop', 'helptitle', 'helpbody', 'helpcur', 'helpclose',
 'pdevbtn',
@@ -1612,6 +1612,25 @@ function unlockDev() {
 }
 
 let devOrigin = 'menu'; // menu | pause | store — where the dev hub returns to
+/* ---- wipe all data: nuke every save key, reload as a fresh player ---- */
+let wipeArm = 0;
+function wipeAllData() {
+  const now = Date.now();
+  if (now - wipeArm > 5000) { // first tap: arm it
+    wipeArm = now;
+    el.hubwipe.classList.add('armed');
+    el.hubwipe.innerHTML = '⚠ TAP AGAIN TO CONFIRM<span class="sub">this erases points · store · badges · dev unlock</span>';
+    AU.click();
+    toast('TAP AGAIN TO CONFIRM — WIPES ALL SAVE DATA');
+    return;
+  }
+  try {
+    const dead = [];
+    for (let i = 0; i < localStorage.length; i++) dead.push(localStorage.key(i));
+    dead.forEach((k) => { if (k && k.indexOf('neonvoid_') === 0) localStorage.removeItem(k); });
+  } catch (e) {}
+  location.reload();
+}
 function openDevHub(origin) {
   AU.click();
   devOrigin = origin || 'menu';
@@ -1623,6 +1642,9 @@ function openDevHub(origin) {
 function closeDevHub() {
   AU.click();
   el.devhub.classList.add('hidden');
+  el.hubwipe.classList.remove('armed');
+  el.hubwipe.innerHTML = '🗑 WIPE ALL DATA<span class="sub">erase every save — play as a fresh player</span>';
+  wipeArm = 0;
   if (devOrigin === 'pause' && G.mode === 'paused') {
     el.paused.classList.remove('hidden');
   } else if (devOrigin === 'store') {
@@ -2241,6 +2263,7 @@ el.hubstore.addEventListener('click', () => {
   } catch (e) { toast('UNLOCK IN VOID MARKET FIRST'); }
 });
 el.hubclose.addEventListener('click', closeDevHub);
+el.hubwipe.addEventListener('click', wipeAllData);
 el.liveopsback.addEventListener('click', backToHub);
 el.shopdevreset.addEventListener('click', shopDevReset);
 el.devlogo.textContent = '◈ v' + GAME_VERSION; // the badge is the real version
@@ -2537,10 +2560,11 @@ try {
   if (_b) { BADGES.sealed = _b.sealed | 0; BADGES.storm = _b.storm | 0; }
 } catch (e) {}
 function renderBadges() {
-  const s1 = BADGES.sealed > 0, s2 = BADGES.storm > 0;
-  el.badgeline.innerHTML =
-    '<span class="badge' + (s1 ? ' on' : '') + '">🛡 VOID SEALED</span>' +
-    '<span class="badge' + (s2 ? ' on' : '') + '">🌀 VOIDSTORM' + (BADGES.storm > 1 ? ' ×' + BADGES.storm : '') + '</span>';
+  // earned badges only — unearned ones stay hidden entirely
+  let h = '';
+  if (BADGES.sealed > 0) h += '<span class="badge on">🛡 VOID SEALED</span>';
+  if (BADGES.storm > 0) h += '<span class="badge on">🌀 VOIDSTORM' + (BADGES.storm > 1 ? ' ×' + BADGES.storm : '') + '</span>';
+  el.badgeline.innerHTML = h;
 }
 
 /* ============================================================
@@ -3494,7 +3518,7 @@ if (window.visualViewport) {
 }
 
 // headless test hook
-window.__NV = { G, CFG, IN, META, WEAPONS, UPOOL, STORY, BADGES, startGame, spawnEnemy, gainXP, damagePlayer, damageEnemy, rollUpgrades, applyUpgrade, fireNuke, update, draw, updateHUD, updateCamera, ETYPES, PBASE, SHOP, META_UPS, META_ITEMS, GAME_VERSION, devLogoTap, unlockDev, renderDev, devResetAll, openDev, openDevHub, closeDevHub, backToHub, openLiveOps, renderLiveOps, liveSkipVoids, liveSkipToBoss, liveSealAll, liveToggleSpawnMode, liveSpawnBoss, liveSpawnElite, liveSpawnType, liveKillAll, liveLevel, liveRefillHP, liveRefillNukes, liveAddPts, liveSkipTime, devShopTap, unlockShopDev, renderShopDev, shopDevReset, openShopDev, wmod, setHelp, openHelp, closeHelp, openEnemies, closeEnemies, renderEnemies, startRupture, storySpawnBoss, continueStory, showStoryDone };
+window.__NV = { G, CFG, IN, META, WEAPONS, UPOOL, STORY, BADGES, startGame, spawnEnemy, gainXP, damagePlayer, damageEnemy, rollUpgrades, applyUpgrade, fireNuke, update, draw, updateHUD, updateCamera, ETYPES, PBASE, SHOP, META_UPS, META_ITEMS, GAME_VERSION, BADGES, devLogoTap, unlockDev, renderDev, devResetAll, openDev, openDevHub, closeDevHub, backToHub, openLiveOps, renderLiveOps, liveSkipVoids, liveSkipToBoss, liveSealAll, liveToggleSpawnMode, liveSpawnBoss, liveSpawnElite, liveSpawnType, liveKillAll, liveLevel, liveRefillHP, liveRefillNukes, liveAddPts, liveSkipTime, devShopTap, unlockShopDev, renderShopDev, shopDevReset, openShopDev, wmod, setHelp, openHelp, closeHelp, openEnemies, closeEnemies, renderEnemies, renderBadges, wipeAllData, startRupture, storySpawnBoss, continueStory, showStoryDone };
 
 if (window.location.hash.indexOf('autodemo') >= 0) {
   G.demo = true;
