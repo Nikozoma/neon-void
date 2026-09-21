@@ -14,7 +14,7 @@ const dist2 = (ax, ay, bx, by) => { const dx = ax - bx, dy = ay - by; return dx 
 const pick = (arr) => arr[(Math.random() * arr.length) | 0];
 
 /* single source of truth for the game version — shown on the menu badge */
-const GAME_VERSION = '3.5';
+const GAME_VERSION = '3.6';
 
 /* ---------------- config ---------------- */
 const CFG = {
@@ -47,6 +47,19 @@ const CFG = {
   firstBoss: 150,
   eliteNukeCh: 0.22,            // elite nuke drop chance
   eliteHealCh: 0.35,            // elite heal drop chance
+  // mid-run drops (regular kills; dev-tunable)
+  dropDroneCh: 0.012,           // weapon drone drop chance
+  dropAegisCh: 0.010,           // force field drop chance
+  dropShieldCh: 0.015,          // shield replenish drop chance
+  dropNukeCh: 0.008,            // nuke drop chance (regular kills)
+  dropPhaseCh: 0.010,           // phase charge drop chance
+  multStep: 0.1,                // kill-streak multiplier gain per kill
+  multCap: 5,                   // kill-streak multiplier cap
+  droneTime: 30,                // weapon drone duration (s)
+  forceTime: 10,                // force field invulnerability (s)
+  phaseTime: 10,                // phase intangibility duration (s)
+  phaseBoomR: 230,              // phase-collapse implosion radius
+  phaseBoomDmg: 1500,           // phase-collapse damage to boss
 };
 CFG.xpNeed = (lvl) => Math.round(CFG.xpBase * Math.pow(lvl, CFG.xpPow));
 CFG.spawnInterval = (t) => clamp(CFG.spawnBase - t * CFG.spawnDecay, CFG.spawnMin, CFG.spawnBase);
@@ -58,7 +71,9 @@ CFG.dmgMul = (t) => 1 + t / CFG.dmgRate;
 const DEVPARAMS = ['maxEnemies', 'spawnBase', 'spawnDecay', 'spawnMin', 'batchEvery',
   'hpRate', 'spdRate', 'spdCap', 'dmgRate', 'xpBase', 'xpPow', 'pickDR',
   'loopSpawnInt', 'loopSpawnBatch', 'loopFoeHp', 'loopFoeDmg', 'loopBossHp',
-  'eliteEvery', 'firstElite', 'bossEvery', 'firstBoss', 'eliteNukeCh', 'eliteHealCh'];
+  'eliteEvery', 'firstElite', 'bossEvery', 'firstBoss', 'eliteNukeCh', 'eliteHealCh',
+  'dropDroneCh', 'dropAegisCh', 'dropShieldCh', 'dropNukeCh', 'dropPhaseCh',
+  'multStep', 'multCap', 'droneTime', 'forceTime', 'phaseTime', 'phaseBoomR', 'phaseBoomDmg'];
 const CFG_DEFAULTS = {};
 DEVPARAMS.forEach((k) => { CFG_DEFAULTS[k] = CFG[k]; });
 
@@ -246,6 +261,8 @@ function resize() {
   // nuke button anchor (top-right), 25% smaller than the old dash button
   IN.nukeBX = W - 58;
   IN.nukeBY = 104;
+  IN.phaseBX = W - 58;
+  IN.phaseBY = 104 + 84;
   // fixed virtual-stick anchors: movement bottom-left, firing bottom-right
   IN.moveBX = 104; IN.moveBY = H - 118;
   IN.aimBX = W - 104; IN.aimBY = H - 118;
@@ -269,6 +286,7 @@ const IN = {
   // aim stick
   aActive: false, aId: -1, aOX: 0, aOY: 0, aX: 0, aY: 0,
   nukeBX: 0, nukeBY: 0, nukeQueued: false,
+  phaseBX: 0, phaseBY: 0, phaseQueued: false,
   moveBX: 0, moveBY: 0, aimBX: 0, aimBY: 0,
   keys: {},
   stickR: 60, // visual radius px (scaled at draw)
@@ -288,6 +306,12 @@ canvas.addEventListener('touchstart', (e) => {
     const ddx = p.x - IN.nukeBX, ddy = p.y - IN.nukeBY;
     if (ddx * ddx + ddy * ddy < 46 * 46 && G.mode === 'playing') {
       IN.nukeQueued = true;
+      continue;
+    }
+    // phase button hit? (only drawn when the player holds a charge)
+    const pdx = p.x - IN.phaseBX, pdy = p.y - IN.phaseBY;
+    if (pdx * pdx + pdy * pdy < 46 * 46 && G.mode === 'playing' && G.player && G.player.phase > 0) {
+      IN.phaseQueued = true;
       continue;
     }
     // fixed sticks: movement anchored bottom-left, firing bottom-right
@@ -337,6 +361,7 @@ window.addEventListener('keydown', (e) => {
   IN.keys[e.code] = true;
   AU.init();
   if (e.code === 'Space') { IN.nukeQueued = true; e.preventDefault(); }
+  if (e.code === 'KeyE' && G.mode === 'playing') { IN.phaseQueued = true; }
   if (e.code === 'KeyP' && G.mode === 'playing') togglePause();
 });
 window.addEventListener('keyup', (e) => { IN.keys[e.code] = false; });
@@ -378,7 +403,7 @@ function readInput() {
    ============================================================ */
 const G = {
   mode: 'menu',   // menu | playing | levelup | paused | gameover
-  time: 0, score: 0, kills: 0,
+  time: 0, score: 0, kills: 0, mult: 1,   // mult = kill-streak score multiplier
   level: 1, xp: 0, xpNeed: CFG.xpNeed(1),
   trauma: 0, hitstop: 0,
   player: null,
@@ -552,6 +577,9 @@ function newPlayer() {
     crit: PBASE.crit, bulletSpeed: PBASE.bulletSpeed, magnet: PBASE.magnet, siphon: 0,
     seek: PBASE.seek, nukes: PBASE.nukes, shields: PBASE.shields, spreadBonus: 0,
     fireT: 0,
+    phase: 0, phaseT: 0,      // phase consumable charges + active timer
+    forceT: 0,                // force field invulnerability timer
+    drone: null,              // weapon drone {w, lvl, t, ...} or null
     faceX: 1, faceY: 0, aimX: 1, aimY: 0,
     inv: 0, alive: true,
   };
@@ -560,7 +588,7 @@ function newPlayer() {
 }
 
 function resetGame() {
-  G.time = 0; G.score = 0; G.kills = 0;
+  G.time = 0; G.score = 0; G.kills = 0; G.mult = 1;
   G.level = 1; G.xp = 0; G.xpNeed = CFG.xpNeed(1);
   G.trauma = 0; G.hitstop = 0;
   G.player = newPlayer();
@@ -685,6 +713,25 @@ function dropNuke(x, y) {
     val: 1, life: 16, r: 12,
   });
 }
+/* mid-run special drops */
+function dropSpecial(kind, x, y) {
+  const a = rand(0, TAU);
+  G.pickups.push({
+    kind, x: x + Math.cos(a) * 20, y: y + Math.sin(a) * 20,
+    vx: Math.cos(a) * 60, vy: Math.sin(a) * 60,
+    val: 1, life: 18, r: 12,
+  });
+}
+/* weighted roll for a special drop on a regular kill */
+function rollDrops(e) {
+  const r = Math.random();
+  const c = CFG;
+  if (r < c.dropDroneCh) dropSpecial('drone', e.x, e.y);
+  else if (r < c.dropDroneCh + c.dropAegisCh) dropSpecial('aegis', e.x, e.y);
+  else if (r < c.dropDroneCh + c.dropAegisCh + c.dropShieldCh) dropSpecial('shield', e.x, e.y);
+  else if (r < c.dropDroneCh + c.dropAegisCh + c.dropShieldCh + c.dropNukeCh) dropNuke(e.x, e.y);
+  else if (r < c.dropDroneCh + c.dropAegisCh + c.dropShieldCh + c.dropNukeCh + c.dropPhaseCh) dropSpecial('phase', e.x, e.y);
+}
 
 /* ---------------- NUKE — map-clearing panic button ---------------- */
 function fireNuke() {
@@ -712,6 +759,26 @@ function fireNuke() {
   AU.nuke();
   toast('☢ NUKE DETONATED');
   updateHUD();
+}
+
+/* ---------------- PHASE — consumable intangibility + implosion ---------------- */
+function phaseImplode() {
+  const p = G.player, R = CFG.phaseBoomR;
+  G.shocks.push({ x: p.x, y: p.y, r: 24, maxR: R, life: 0.6, maxLife: 0.6 });
+  G.flash = 0.7;
+  addShake(0.7);
+  AU.nuke();
+  for (const e of G.enemies.slice()) {
+    if (dist2(e.x, e.y, p.x, p.y) < R * R) {
+      if (e.boss) {
+        damageEnemy(e, CFG.phaseBoomDmg, 0, 0, false);
+        addFloat(e.x, e.y - 70, 'PHASE HIT', '#c07bff', 22);
+      } else {
+        killEnemy(e);
+      }
+    }
+  }
+  toast('◈ PHASE COLLAPSE');
 }
 
 let pickupStreak = 0, pickupStreakT = 0;
@@ -749,6 +816,41 @@ function updatePickups(dt) {
           addFloat(p.x, p.y - 26, '+250', '#ffd76a', 15);
         }
         spawnParts(k.x, k.y, '#ffd76a', 12, 200, 0.5, 4);
+        AU.pickup(9);
+        updateHUD();
+      } else if (k.kind === 'drone') {
+        equipDrone();
+        spawnParts(k.x, k.y, '#7df9ff', 14, 220, 0.5, 4);
+        AU.pickup(9);
+      } else if (k.kind === 'aegis') {
+        p.forceT = CFG.forceTime;
+        addFloat(p.x, p.y - 26, '🛡 FORCE FIELD', '#7df9ff', 17);
+        toast('🛡 FORCE FIELD — INVINCIBLE ' + CFG.forceTime + 's');
+        spawnParts(k.x, k.y, '#7df9ff', 16, 240, 0.6, 4);
+        AU.pickup(9);
+        updateHUD();
+      } else if (k.kind === 'shield') {
+        if (p.shields < 3) {
+          p.shields++;
+          addFloat(p.x, p.y - 26, '🛡 +1 SHIELD', '#7df9ff', 17);
+          toast('🛡 AEGIS RESTORED');
+        } else {
+          G.score += 250;
+          addFloat(p.x, p.y - 26, '+250', '#7df9ff', 15);
+        }
+        spawnParts(k.x, k.y, '#7df9ff', 12, 200, 0.5, 4);
+        AU.pickup(9);
+        updateHUD();
+      } else if (k.kind === 'phase') {
+        if (p.phase < 3) {
+          p.phase++;
+          addFloat(p.x, p.y - 26, '◈ PHASE CHARGE', '#c07bff', 17);
+          toast('◈ PHASE CHARGE — PRESS E / TAP ◈ TO SHIFT');
+        } else {
+          G.score += 250;
+          addFloat(p.x, p.y - 26, '+250', '#c07bff', 15);
+        }
+        spawnParts(k.x, k.y, '#c07bff', 12, 200, 0.5, 4);
         AU.pickup(9);
         updateHUD();
       } else {
@@ -1044,7 +1146,9 @@ function killEnemy(e) {
   const idx = G.enemies.indexOf(e);
   if (idx >= 0) G.enemies.splice(idx, 1);
   G.kills++;
-  G.score += e.score + Math.floor(G.time) * (e.boss ? 5 : 0);
+  // kill-streak multiplier: climbs per kill, resets when the player is hit
+  G.mult = Math.min(CFG.multCap, Math.round((G.mult + CFG.multStep) * 10) / 10);
+  G.score += (e.score + Math.floor(G.time) * (e.boss ? 5 : 0)) * G.mult;
   const big = e.elite || e.boss || e.type === 'tank';
   spawnParts(e.x, e.y, e.color, big ? 26 : 12, big ? 320 : 220, big ? 0.7 : 0.45, big ? 5 : 4);
   spawnParts(e.x, e.y, '#ffffff', big ? 10 : 5, 160, 0.3, 3);
@@ -1069,6 +1173,7 @@ function killEnemy(e) {
     addFloat(e.x, e.y - 30, '+' + e.score, COL.elite, 17);
   } else {
     dropShard(e.x, e.y, e.xp);
+    rollDrops(e);
   }
   // siphon heal
   const p = G.player;
@@ -1077,9 +1182,73 @@ function killEnemy(e) {
   }
 }
 
+/* ---------------- WEAPON DRONE — temporary floating sidearm ----------------
+   Rolls a random owned weapon (not the one equipped), scaled to the same
+   level-percentage as the player's current weapon. Orbits the player and
+   fires alongside for CFG.droneTime seconds. */
+function equipDrone() {
+  const p = G.player;
+  const cur = META.weapon || 'pulse';
+  const curW = WEAPONS[cur] || WEAPONS.pulse;
+  const curLvl = Math.max(1, META.wlvl[cur] | 0);
+  const pct = clamp(curLvl / curW.maxLvl, 0, 1);
+  const owned = Object.keys(WEAPONS).filter((id) => id !== cur && (META.wlvl[id] | 0) > 0);
+  const pool = owned.length ? owned : Object.keys(WEAPONS).filter((id) => id !== cur);
+  const wid = pool[(Math.random() * pool.length) | 0];
+  const w = WEAPONS[wid];
+  const lvl = clamp(Math.round(pct * w.maxLvl), 1, w.maxLvl);
+  p.drone = {
+    w: wid, lvl, t: CFG.droneTime, ang: rand(0, TAU), fireT: 0,
+    x: p.x, y: p.y,
+    dmg: p.dmg * wmod(w, 'dmgMul', lvl),
+    rate: p.fireRate * wmod(w, 'rateMul', lvl),
+    proj: 1 + Math.max(0, Math.round(wmod(w, 'proj', lvl))),
+    pierce: Math.max(p.pierce, Math.round(wmod(w, 'pierce', lvl))),
+    bspd: p.bulletSpeed * wmod(w, 'spdMul', lvl),
+    spread: 0.09 + Math.max(0, wmod(w, 'spread', lvl)),
+    crit: p.crit, seek: p.seek,
+  };
+  addFloat(p.x, p.y - 30, '🔫 DRONE: ' + w.name + ' LV' + lvl, '#7df9ff', 17);
+  toast('🔫 WEAPON DRONE — ' + w.name + ' LV' + lvl);
+  updateHUD();
+}
+function fireDrone(d) {
+  const p = G.player;
+  const ax = p.aimX, ay = p.aimY;
+  for (let i = 0; i < d.proj; i++) {
+    const off = (i - (d.proj - 1) / 2) * d.spread + rand(-0.02, 0.02);
+    const ca = Math.cos(off), sa = Math.sin(off);
+    const dx = ax * ca - ay * sa, dy = ax * sa + ay * ca;
+    G.bullets.push({
+      x: d.x + dx * 14, y: d.y + dy * 14,
+      vx: dx * d.bspd + p.vx * 0.35,
+      vy: dy * d.bspd + p.vy * 0.35,
+      dmg: d.dmg, pierce: d.pierce, r: 5, life: 0.85, t: 0,
+      critC: d.crit, hitSet: null, seek: d.seek,
+    });
+  }
+  spawnParts(d.x + ax * 16, d.y + ay * 16, COL.bullet, 2, 90, 0.15, 3);
+}
+function updateDrone(dt) {
+  const p = G.player, d = p.drone;
+  if (!d) return;
+  d.t -= dt;
+  if (d.t <= 0) { p.drone = null; toast('🔫 DRONE OFFLINE'); updateHUD(); return; }
+  d.ang += dt * 2.4;
+  d.x = p.x + Math.cos(d.ang) * 56;
+  d.y = p.y + Math.sin(d.ang) * 56;
+  d.fireT -= dt;
+  if (d.fireT <= 0 && p.alive) {
+    fireDrone(d);
+    d.fireT = 1 / Math.max(0.5, d.rate);
+  }
+}
+
 function damagePlayer(dmg, sx, sy) {
   const p = G.player;
   if (!p.alive || p.inv > 0 || G.devGod) return;
+  if (p.forceT > 0 || p.phaseT > 0) return; // force field / phase: untouchable
+  G.mult = 1; // getting hit breaks the kill streak
   if (p.shields > 0) {
     p.shields--;
     p.inv = 0.6;
@@ -1174,7 +1343,7 @@ const el = {};
  'enemies', 'enemiesbtn', 'penemiesbtn', 'enemygrid', 'enemiesback',
  'startbtn', 'retrybtn', 'menubtn', 'resumebtn', 'quitbtn', 'pausebtn', 'mutebtn',
  'devlogo', 'devbtn', 'devmenu', 'devbody', 'devrestart', 'devreset', 'devback',
- 'devhub', 'hubrun', 'hublive', 'hubstore', 'hubwipe', 'hubclose',
+ 'devhub', 'hubrun', 'hublive', 'hubstore', 'hubwipe', 'hubclose', 'fxline',
  'liveops', 'liveopsbody', 'liveopsback',
 'devhelpbtn', 'shopdevhelpbtn', 'helpop', 'helptitle', 'helpbody', 'helpcur', 'helpclose',
 'pdevbtn',
@@ -1209,9 +1378,22 @@ function updateHUD() {
   el.hpbar.classList.toggle('low', pct < 0.3);
   el.xpfill.style.width = clamp(G.xp / G.xpNeed, 0, 1) * 100 + '%';
   el.lvltext.textContent = 'LV ' + G.level;
-  el.nukeline.textContent = '☢ ×' + p.nukes + (p.shields > 0 ? '   🛡 ×' + p.shields : '');
+  el.nukeline.textContent = '☢ ×' + p.nukes + (p.shields > 0 ? '   🛡 ×' + p.shields : '') +
+    (p.phase > 0 ? '   ◈ ×' + p.phase : '');
+  // active effect timers
+  const fx = [];
+  if (p.drone) fx.push('🔫 ' + Math.ceil(p.drone.t) + 's');
+  if (p.forceT > 0) fx.push('🛡 ' + Math.ceil(p.forceT) + 's');
+  if (p.phaseT > 0) fx.push('◈ ' + Math.ceil(p.phaseT) + 's');
+  if (fx.length) {
+    el.fxline.classList.remove('hidden');
+    el.fxline.textContent = fx.join('   ');
+  } else {
+    el.fxline.classList.add('hidden');
+  }
   el.timer.textContent = fmtTime(G.time);
-  el.score.textContent = Math.floor(G.score).toLocaleString('en-US');
+  el.score.textContent = Math.floor(G.score).toLocaleString('en-US') +
+    (G.mult > 1 ? '  ×' + G.mult.toFixed(1) : '');
   if (G.boss) el.bossfill.style.width = clamp(G.boss.hp / G.boss.maxhp, 0, 1) * 100 + '%';
   // storyline status line
   const st = G.story;
@@ -2025,6 +2207,13 @@ function renderDev() {
   g = devGrid(); b.appendChild(g);
   num(g, 'Elite nuke chance', CFG, 'eliteNukeCh', 0.01, 0, 1, 2, 'elitenukech');
   num(g, 'Elite heal chance', CFG, 'eliteHealCh', 0.01, 0, 1, 2, 'elitehealch');
+  num(g, 'Drop: drone', CFG, 'dropDroneCh', 0.001, 0, 1, 3, 'dropdronech');
+  num(g, 'Drop: force field', CFG, 'dropAegisCh', 0.001, 0, 1, 3, 'dropaegisch');
+  num(g, 'Drop: shield', CFG, 'dropShieldCh', 0.001, 0, 1, 3, 'dropshieldch');
+  num(g, 'Drop: nuke', CFG, 'dropNukeCh', 0.001, 0, 1, 3, 'dropnukech');
+  num(g, 'Drop: phase', CFG, 'dropPhaseCh', 0.001, 0, 1, 3, 'dropphasech');
+  num(g, 'Mult step/kill', CFG, 'multStep', 0.05, 0, 1, 2, 'multstep');
+  num(g, 'Mult cap', CFG, 'multCap', 0.5, 1, 20, 1, 'multcap');
 
   // ---- player base (next run) ----
   b.appendChild(devSection('PLAYER BASE · applies on run start'));
@@ -2585,6 +2774,36 @@ function updatePlayer(dt, inp) {
   p.x = clamp(p.x + p.vx * dt, b.x + p.r, b.x + b.w - p.r);
   p.y = clamp(p.y + p.vy * dt, b.y + p.r, b.y + b.h - p.r);
   p.inv = Math.max(0, p.inv - dt);
+
+  // force field: invulnerable while active; expiry grants a bonus shield
+  if (p.forceT > 0) {
+    p.forceT -= dt;
+    if (p.forceT <= 0) {
+      p.shields++;
+      addFloat(p.x, p.y - 30, '🛡 FORCE SHIELD', '#7df9ff', 17);
+      toast('🛡 FORCE SHIELD ABSORBED');
+      spawnParts(p.x, p.y, '#7df9ff', 16, 240, 0.6, 4);
+      updateHUD();
+    }
+  }
+  // phase: intangible while active; expiry triggers the implosion
+  if (p.phaseT > 0) {
+    p.phaseT -= dt;
+    if (p.phaseT <= 0) phaseImplode();
+  }
+  // phase activation (keyboard E / touch ◈ button)
+  if (IN.phaseQueued) {
+    IN.phaseQueued = false;
+    if (p.phase > 0 && p.phaseT <= 0 && p.alive) {
+      p.phase--;
+      p.phaseT = CFG.phaseTime;
+      toast('◈ PHASE SHIFT — ' + CFG.phaseTime + 's');
+      spawnParts(p.x, p.y, '#c07bff', 20, 280, 0.6, 4);
+      AU.level();
+      updateHUD();
+    }
+  }
+  updateDrone(dt);
 
   // facing / firing
   if (inp.firing) {
@@ -3159,6 +3378,25 @@ function draw() {
       ctx.fillText('☢', 0, 1);
       ctx.restore();
     }
+    else if (k.kind === 'drone' || k.kind === 'aegis' || k.kind === 'shield' || k.kind === 'phase') {
+      const ico = k.kind === 'drone' ? '🔫' : k.kind === 'aegis' ? '🛡' : k.kind === 'shield' ? '🛡' : '◈';
+      const col = k.kind === 'phase' ? '#c07bff' : '#7df9ff';
+      ctx.save();
+      ctx.translate(k.x, k.y);
+      ctx.strokeStyle = col;
+      ctx.globalAlpha = 0.9; ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.arc(0, 0, 15 * pulse, 0, TAU); ctx.stroke();
+      if (k.kind === 'aegis') { // double ring = full force field
+        ctx.beginPath(); ctx.arc(0, 0, 19 * pulse, 0, TAU); ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+      ctx.font = '700 20px sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.shadowColor = col; ctx.shadowBlur = 10;
+      ctx.fillStyle = col;
+      ctx.fillText(ico, 0, 1);
+      ctx.restore();
+    }
     else {
       ctx.save();
       ctx.translate(k.x, k.y);
@@ -3219,9 +3457,10 @@ function draw() {
   const p = G.player;
   if (p && (G.mode === 'playing' || G.mode === 'levelup' || G.mode === 'paused')) {
     const blink = p.inv > 0 && Math.floor(tt * 18) % 2 === 0;
+    const phased = p.phaseT > 0;
     ctx.save();
     ctx.translate(p.x, p.y);
-    ctx.globalAlpha = blink ? 0.35 : 1;
+    ctx.globalAlpha = blink ? 0.35 : phased ? 0.45 : 1;
     const fa = Math.atan2(p.faceY, p.faceX);
     ctx.rotate(fa);
     // engine flame
@@ -3257,6 +3496,44 @@ function draw() {
         ctx.arc(p.x, p.y, p.r + 8 + i * 6, 0, TAU);
         ctx.stroke();
       }
+    }
+    // force field bubble
+    if (p.forceT > 0) {
+      ctx.save();
+      ctx.globalAlpha = 0.5 + Math.sin(tt * 10) * 0.2;
+      ctx.strokeStyle = '#7df9ff';
+      ctx.lineWidth = 3;
+      ctx.shadowColor = '#7df9ff'; ctx.shadowBlur = 16;
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.r + 26, 0, TAU); ctx.stroke();
+      ctx.restore();
+    }
+    // phase shimmer ring
+    if (p.phaseT > 0) {
+      ctx.save();
+      ctx.globalAlpha = 0.6;
+      ctx.strokeStyle = '#c07bff';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([8, 6]);
+      ctx.lineDashOffset = -tt * 40;
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.r + 14, 0, TAU); ctx.stroke();
+      ctx.restore();
+    }
+    // weapon drone
+    const dr = p.drone;
+    if (dr) {
+      ctx.save();
+      ctx.translate(dr.x, dr.y);
+      const dw = WEAPONS[dr.w] || WEAPONS.pulse;
+      if (dr.t < 5) ctx.globalAlpha = Math.floor(tt * 6) % 2 === 0 ? 0.35 : 0.9;
+      ctx.strokeStyle = '#7df9ff'; ctx.lineWidth = 2;
+      ctx.shadowColor = '#7df9ff'; ctx.shadowBlur = 8;
+      ctx.beginPath(); ctx.arc(0, 0, 13, 0, TAU); ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.font = '700 15px sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#dffcff';
+      ctx.fillText(dw.ico, 0, 1);
+      ctx.restore();
     }
   }
 
@@ -3343,6 +3620,21 @@ function draw() {
     ctx.font = '700 11px sans-serif';
     ctx.fillText('×' + p2.nukes, bx, by + 10);
     ctx.globalAlpha = 1;
+    // phase button (below nuke, only while holding a charge)
+    if (p2.phase > 0) {
+      const px = IN.phaseBX, py = IN.phaseBY, pr = 34;
+      const pactive = p2.phaseT > 0;
+      ctx.globalAlpha = pactive ? 1 : 0.92;
+      ctx.beginPath(); ctx.arc(px, py, pr, 0, TAU);
+      ctx.strokeStyle = pactive ? '#ffffff' : '#c07bff'; ctx.lineWidth = 3; ctx.stroke();
+      ctx.fillStyle = pactive ? '#ffffff' : '#c07bff';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.font = '700 17px sans-serif';
+      ctx.fillText('◈', px, py - 7);
+      ctx.font = '700 11px sans-serif';
+      ctx.fillText('×' + p2.phase, px, py + 10);
+      ctx.globalAlpha = 1;
+    }
     // fixed virtual sticks — always visible, knob follows the finger
     const drawStick = (ox, oy, dx, dy, col, active) => {
       ctx.globalAlpha = active ? 0.35 : 0.15;
@@ -3398,7 +3690,7 @@ function orientIsPhone() {
 function orientEligible() { return !orientIsStandalone() && orientIsPhone(); }
 function orientIsPortrait() { return window.innerHeight > window.innerWidth; }
 function orientResetInput() {
-  IN.mActive = false; IN.aActive = false; IN.nukeQueued = false;
+  IN.mActive = false; IN.aActive = false; IN.nukeQueued = false; IN.phaseQueued = false;
   IN.mX = 0; IN.mY = 0; IN.aX = 0; IN.aY = 0; IN.keys = {};
 }
 async function orientLockLandscape() {
@@ -3518,7 +3810,8 @@ if (window.visualViewport) {
 }
 
 // headless test hook
-window.__NV = { G, CFG, IN, META, WEAPONS, UPOOL, STORY, BADGES, startGame, spawnEnemy, gainXP, damagePlayer, damageEnemy, rollUpgrades, applyUpgrade, fireNuke, update, draw, updateHUD, updateCamera, ETYPES, PBASE, SHOP, META_UPS, META_ITEMS, GAME_VERSION, BADGES, devLogoTap, unlockDev, renderDev, devResetAll, openDev, openDevHub, closeDevHub, backToHub, openLiveOps, renderLiveOps, liveSkipVoids, liveSkipToBoss, liveSealAll, liveToggleSpawnMode, liveSpawnBoss, liveSpawnElite, liveSpawnType, liveKillAll, liveLevel, liveRefillHP, liveRefillNukes, liveAddPts, liveSkipTime, devShopTap, unlockShopDev, renderShopDev, shopDevReset, openShopDev, wmod, setHelp, openHelp, closeHelp, openEnemies, closeEnemies, renderEnemies, renderBadges, wipeAllData, startRupture, storySpawnBoss, continueStory, showStoryDone };
+window.__NV = { G, CFG, IN, META, WEAPONS, UPOOL, STORY, BADGES, startGame, spawnEnemy, gainXP, damagePlayer, damageEnemy, rollUpgrades, applyUpgrade, fireNuke, update, draw, updateHUD, updateCamera, ETYPES, PBASE, SHOP, META_UPS, META_ITEMS, GAME_VERSION, BADGES, devLogoTap, unlockDev, renderDev, devResetAll, openDev, openDevHub, closeDevHub, backToHub, openLiveOps, renderLiveOps, liveSkipVoids, liveSkipToBoss, liveSealAll, liveToggleSpawnMode, liveSpawnBoss, liveSpawnElite, liveSpawnType, liveKillAll, liveLevel, liveRefillHP, liveRefillNukes, liveAddPts, liveSkipTime, devShopTap, unlockShopDev, renderShopDev, shopDevReset, openShopDev, wmod, setHelp, openHelp, closeHelp, openEnemies, closeEnemies, renderEnemies, renderBadges, wipeAllData, startRupture,
+  equipDrone, phaseImplode, rollDrops, dropSpecial, storySpawnBoss, continueStory, showStoryDone };
 
 if (window.location.hash.indexOf('autodemo') >= 0) {
   G.demo = true;
