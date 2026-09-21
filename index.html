@@ -85,6 +85,7 @@
     <div class="panel devpanel">
       <h2>SHOP DEV</h2>
       <p class="tag">economy lab — handle with care</p>
+      <div class="devhelpwrap"><button id="shopdevhelpbtn" class="ghostbtn devhelpbtn">HELP: OFF</button></div>
       <div id="shopdevbody"></div>
       <div class="devactions">
         <button id="shopdevreset" class="ghostbtn">RESET SHOP DEFAULTS</button>
@@ -98,12 +99,23 @@
     <div class="panel devpanel">
       <h2>DEV CONSOLE</h2>
       <p class="tag">tuning lab — handle with care</p>
+      <div class="devhelpwrap"><button id="devhelpbtn" class="ghostbtn devhelpbtn">HELP: OFF</button></div>
       <div id="devbody"></div>
       <div class="devactions">
         <button id="devrestart" class="bigbtn">↻ RESTART RUN</button>
         <button id="devreset" class="ghostbtn">RESET ALL DEFAULTS</button>
         <button id="devback" class="ghostbtn">BACK</button>
       </div>
+    </div>
+  </div>
+
+  <!-- Dev help popup -->
+  <div id="helpop" class="overlay hidden">
+    <div class="panel helppanel">
+      <h3 id="helptitle"></h3>
+      <p id="helpbody"></p>
+      <p id="helpcur" class="helpcurrent"></p>
+      <button id="helpclose" class="bigbtn">GOT IT</button>
     </div>
   </div>
 
@@ -121,6 +133,7 @@
     <div class="panel">
       <h2>PAUSED</h2>
       <button id="resumebtn" class="bigbtn">RESUME</button>
+      <button id="pdevbtn" class="ghostbtn hidden">DEVELOPER</button>
       <button id="quitbtn" class="ghostbtn">ABANDON RUN</button>
     </div>
   </div>
