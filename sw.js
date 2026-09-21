@@ -1,5 +1,5 @@
 /* Neon Void service worker — cache-first, offline capable */
-const CACHE = 'neon-void-v17';
+const CACHE = 'neon-void-v18';
 const ASSETS = [
   './',
   './index.html',
