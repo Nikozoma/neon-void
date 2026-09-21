@@ -52,6 +52,7 @@
         <div class="menuactions">
           <button id="startbtn" class="bigbtn">ENTER THE VOID</button>
           <button id="storebtn" class="ghostbtn">LOADOUT / STORE</button>
+          <button id="skillsbtn" class="ghostbtn">SKILL DROPS</button>
           <button id="devbtn" class="ghostbtn devbtn hidden">DEVELOPER</button>
         </div>
         <div class="menustats">
@@ -73,11 +74,26 @@
       <div id="storeups"></div>
       <h3 class="item">SUPPLIES</h3>
       <div id="storeitems"></div>
+      <h3 class="slot">SKILL SLOTS</h3>
+      <div id="storeslots"></div>
       <h3 class="wpn">WEAPONS</h3>
       <div id="storeweapons"></div>
       <div class="storefoot">
         <button id="storeback" class="bigbtn">BACK</button>
         <button id="shopdevbtn" class="ghostbtn hidden">SHOP DEV</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Skill drops: help reference + pre-run loadout picker -->
+  <div id="skills" class="overlay hidden">
+    <div class="panel storepanel">
+      <h2>SKILL DROPS</h2>
+      <p id="skillstag" class="tag">all 11 in-run upgrades — tap to choose your loadout</p>
+      <p id="skillslots" class="pts"></p>
+      <div id="skillgrid"></div>
+      <div class="storefoot">
+        <button id="skillsback" class="bigbtn">BACK</button>
       </div>
     </div>
   </div>
@@ -159,6 +175,7 @@
     <div class="panel">
       <h2>PAUSED</h2>
       <button id="resumebtn" class="bigbtn">RESUME</button>
+      <button id="pskillsbtn" class="ghostbtn">SKILL DROPS</button>
       <button id="pdevbtn" class="ghostbtn hidden">DEVELOPER</button>
       <button id="quitbtn" class="ghostbtn">ABANDON RUN</button>
     </div>
