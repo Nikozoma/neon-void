@@ -39,18 +39,24 @@
 
   <!-- Main menu -->
   <div id="menu" class="overlay">
-    <div class="panel">
+    <div class="panel menupanel">
       <h1>NEON&nbsp;VOID</h1>
       <p class="tag">twin-stick arena survival</p>
-      <div class="howto">
-        <div><span class="k">◀ left thumb</span> move</div>
-        <div><span class="k">▶ right thumb</span> aim + fire</div>
-        <div><span class="k">☢ nuke</span> panic button — clears the map</div>
+      <div class="menugrid">
+        <div class="howto">
+          <div><span class="k">◀ left thumb</span> move</div>
+          <div><span class="k">▶ right thumb</span> aim + fire</div>
+          <div><span class="k">☢ nuke</span> panic button — clears the map</div>
+        </div>
+        <div class="menuactions">
+          <button id="startbtn" class="bigbtn">ENTER THE VOID</button>
+          <button id="storebtn" class="ghostbtn">LOADOUT / STORE</button>
+        </div>
+        <div class="menustats">
+          <p id="ptsline" class="pts"></p>
+          <p id="bestline" class="best"></p>
+        </div>
       </div>
-      <button id="startbtn" class="bigbtn">ENTER THE VOID</button>
-      <button id="storebtn" class="ghostbtn">LOADOUT / STORE</button>
-      <p id="ptsline" class="pts"></p>
-      <p id="bestline" class="best"></p>
     </div>
   </div>
 
