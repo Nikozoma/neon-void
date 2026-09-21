@@ -14,7 +14,7 @@ const dist2 = (ax, ay, bx, by) => { const dx = ax - bx, dy = ay - by; return dx 
 const pick = (arr) => arr[(Math.random() * arr.length) | 0];
 
 /* single source of truth for the game version — shown on the menu badge */
-const GAME_VERSION = '2.6';
+const GAME_VERSION = '2.7';
 
 /* ---------------- config ---------------- */
 const CFG = {
@@ -53,6 +53,21 @@ const DEVPARAMS = ['maxEnemies', 'spawnBase', 'spawnDecay', 'spawnMin', 'batchEv
   'eliteEvery', 'firstElite', 'bossEvery', 'firstBoss', 'eliteNukeCh', 'eliteHealCh'];
 const CFG_DEFAULTS = {};
 DEVPARAMS.forEach((k) => { CFG_DEFAULTS[k] = CFG[k]; });
+
+/* ---------------- storyline: VOIDSTORM ----------------
+   calm (beginner arena, tears forming) -> rupture at tearAt
+   -> voidwar (voids open, seal N bosses) -> complete -> infinite loops */
+const STORY = {
+  on: 1,                 // master switch (applies on run start)
+  tearAt: 120,           // seconds of calm before the rupture
+  bossesToClose: 5,      // boss kills needed to seal every void
+  voidBossFirst: 20,     // first void-boss delay after rupture (s)
+  voidBossEvery: 75,     // seconds between void bosses
+  ruptureHold: 8,        // spawn pause after the rupture (s)
+  smallW: 1200, smallH: 800,   // calm-phase arena (fully visible)
+  bigW: 2200, bigH: 1500,      // post-rupture arena
+};
+const STORY_DEFAULTS = Object.assign({}, STORY);
 
 /* palette */
 const COL = {
@@ -147,6 +162,20 @@ const AU = {
     this.noise(0.8, 0.7, 600);
     [220, 175, 147, 110].forEach((f, i) => this.tone(f, 0.3, 'sawtooth', 0.3, f * 0.8, i * 0.12));
   },
+  rupture() {
+    this.noise(1.2, 0.8, 400);
+    this.tone(55, 1.1, 'sine', 0.8, 28);
+    this.tone(440, 0.7, 'sawtooth', 0.2, 55, 0.1);
+  },
+  seal() {
+    this.tone(880, 0.25, 'triangle', 0.4, 1760);
+    this.tone(1320, 0.35, 'sine', 0.3, 660, 0.12);
+  },
+  surge() {
+    this.warn();
+    this.noise(0.7, 0.6, 500);
+    this.tone(70, 0.8, 'sawtooth', 0.5, 35, 0.1);
+  },
 };
 
 /* ============================================================
@@ -161,7 +190,21 @@ const cam = { x: CFG.world.w / 2, y: CFG.world.h / 2, zoom: CFG.camZoom };
 function viewHalf() {
   return { hw: W / (2 * cam.zoom), hh: H / (2 * cam.zoom) };
 }
+/* effective camera zoom: fit the small arena during the calm phase,
+   then ease back out to normal as the walls explode */
+function storyZoom() {
+  const st = G.story;
+  if (!st || st.phase === 'off') return CFG.camZoom;
+  if (st.phase === 'calm') return st.fitZoom;
+  if (st.phase === 'rupture') {
+    const k = clamp(st.ruptureT / 2.5, 0, 1);
+    const e = 1 - Math.pow(1 - k, 3);
+    return lerp(st.fitZoom, CFG.camZoom, e);
+  }
+  return CFG.camZoom;
+}
 function updateCamera() {
+  cam.zoom = storyZoom();
   const p = G.player;
   if (p && G.mode !== 'menu' && G.mode !== 'gameover') {
     cam.x = p.x; cam.y = p.y;
@@ -196,6 +239,10 @@ function resize() {
   IN.aimBX = W - 104; IN.aimBY = H - 118;
   buildStars(); // rebuild menu starfield for new size
   buildStatic(); // rebuild cached vignette for new size
+  // keep the calm-phase arena fully visible after resize
+  if (G && G.story && G.story.phase === 'calm') {
+    G.story.fitZoom = clamp(Math.min(W / (STORY.smallW * 1.04), H / (STORY.smallH * 1.3)), 0.3, 1.25);
+  }
   orientRefresh('resize');
 }
 window.addEventListener('resize', resize);
@@ -327,6 +374,7 @@ const G = {
   enemies: [], parts: [], pickups: [], floats: [], shocks: [],
   spawnT: 0, eliteT: 0, bossT: 0, boss: null, bossCount: 0,
   upgrades: {},   // id -> stacks
+  story: null,    // storyline state (see resetGame)
   flash: 0,       // full-screen flash (nuke)
   muted: false,
   demo: false,
@@ -495,6 +543,35 @@ function resetGame() {
   G.spawnT = 1.2; G.eliteT = CFG.firstElite; G.bossT = CFG.firstBoss;
   G.boss = null; G.bossCount = 0; G.upgrades = {};
   IN.nukeQueued = false;
+  // ---- storyline state ----
+  G.story = {
+    phase: 'off',   // off | calm | rupture | voidwar | complete
+    loop: 0,        // 0 = first run, 1+ = infinite-mode loops
+    tears: [], voids: [], scars: [],
+    bossesDown: 0,
+    ruptureT: 0, spawnHold: 0, bossT: 0, doneT: -1,
+    warned: false, warAnnounced: false,
+    fitZoom: CFG.camZoom,
+  };
+  if (STORY.on) {
+    const st = G.story;
+    st.phase = 'calm';
+    CFG.world.w = STORY.smallW; CFG.world.h = STORY.smallH;
+    st.fitZoom = clamp(Math.min(W / (STORY.smallW * 1.04), H / (STORY.smallH * 1.3)), 0.3, 1.25);
+    // tears form at random spots, away from the player's start —
+    // one tear per void per boss, so every tear becomes a void
+    for (let i = 0; i < STORY.bossesToClose; i++) {
+      let x = 0, y = 0, tries = 0;
+      do {
+        x = rand(140, STORY.smallW - 140);
+        y = rand(140, STORY.smallH - 140);
+        tries++;
+      } while (tries < 20 && Math.hypot(x - STORY.smallW / 2, y - STORY.smallH / 2) < 260);
+      st.tears.push(genTear(x, y));
+    }
+  } else {
+    CFG.world.w = STORY.bigW; CFG.world.h = STORY.bigH;
+  }
 }
 
 /* ============================================================
@@ -676,22 +753,22 @@ function spawnRing(margin) {
   };
 }
 
-function spawnEnemy(type, x, y, elite) {
+function spawnEnemy(type, x, y, elite, voidT) {
   const base = ETYPES[type];
   const t = G.time;
-  const hpM = CFG.hpMul(t) * (elite ? 5 : 1);
+  const hpM = CFG.hpMul(t) * (elite ? 5 : 1) * (voidT ? 1.6 : 1);
   const pos = (x === undefined) ? spawnRing() : { x, y };
   const e = {
-    type, elite: !!elite,
+    type, elite: !!elite, voidT: !!voidT,
     x: pos.x, y: pos.y,
     vx: 0, vy: 0,
     hp: base.hp * hpM, maxhp: base.hp * hpM,
-    spd: base.spd * CFG.spdMul(t) * rand(0.9, 1.1) * (elite ? 0.9 : 1),
+    spd: base.spd * CFG.spdMul(t) * rand(0.9, 1.1) * (elite ? 0.9 : 1) * (voidT ? 1.08 : 1),
     dmg: base.dmg * CFG.dmgMul(t) * (elite ? 1.5 : 1),
     r: base.r * (elite ? 1.55 : 1) * S + (elite ? 6 : 0),
-    score: base.score * (elite ? 5 : 1),
+    score: base.score * (elite ? 5 : 1) * (voidT ? 2 : 1),
     xp: base.xp * (elite ? 5 : 1),
-    color: elite ? COL.elite : base.color,
+    color: elite ? COL.elite : (voidT ? '#b14dff' : base.color),
     shape: base.shape,
     rot: rand(0, TAU), rotV: rand(-2, 2),
     flash: 0, t: rand(0, 10),
@@ -720,38 +797,83 @@ function pickType(t) {
 
 function updateSpawns(dt) {
   const t = G.time;
+  const st = G.story;
+  const inStory = !!st && st.phase !== 'off';
+  const calm = inStory && st.phase === 'calm';
+  const voidwar = inStory && st.phase === 'voidwar';
+  const held = !!st && st.spawnHold > 0;
+  if (held) st.spawnHold -= dt;
   G.spawnT -= dt;
-  if (G.spawnT <= 0 && G.enemies.length < CFG.maxEnemies) {
+  if (G.spawnT <= 0 && G.enemies.length < CFG.maxEnemies && !held) {
     G.spawnT = CFG.spawnInterval(t);
     const batch = Math.min(CFG.batchSize(t), CFG.maxEnemies - G.enemies.length);
-    for (let i = 0; i < batch; i++) spawnEnemy(pickType(t));
+    const openVoids = voidwar ? st.voids.filter(v => !v.sealed && v.open > 0.5) : null;
+    for (let i = 0; i < batch; i++) {
+      // calm phase: beginner types only (mites + dashers)
+      const type = calm ? (Math.random() < 0.7 ? 'mite' : 'dasher') : pickType(t);
+      if (openVoids && openVoids.length) {
+        const pos = voidSpawnPos(openVoids);
+        spawnEnemy(type, pos.x, pos.y, false, true); // void-touched, crawls out of a void
+      } else {
+        spawnEnemy(type);
+      }
+    }
   }
-  // elites
-  if (t > 50) {
+  // elites — suppressed during the calm before the storm
+  if (t > 50 && !calm && !held) {
     G.eliteT -= dt;
     if (G.eliteT <= 0 && G.enemies.length < CFG.maxEnemies - 4) {
       G.eliteT = CFG.eliteEvery;
-      const pos = spawnRing();
-      spawnEnemy(pickType(t), pos.x, pos.y, true);
+      const open = voidwar ? st.voids.filter(v => !v.sealed && v.open > 0.5) : [];
+      if (open.length) {
+        const pos = voidSpawnPos(open);
+        spawnEnemy(pickType(t), pos.x, pos.y, true, true);
+      } else {
+        const pos = spawnRing();
+        spawnEnemy(pickType(t), pos.x, pos.y, true);
+      }
       toast('ELITE SIGNATURE DETECTED');
     }
   }
   // boss
-  G.bossT -= dt;
-  if (G.bossT <= 0 && !G.boss) {
-    G.bossCount++;
-    spawnBoss();
-    G.bossT = CFG.bossEvery;
+  if (inStory) {
+    // story mode: bosses only emerge from open voids during voidwar
+    if (voidwar && !G.boss && !held) {
+      st.bossT -= dt;
+      if (st.bossT <= 0) {
+        G.bossCount++;
+        storySpawnBoss();
+        st.bossT = STORY.voidBossEvery;
+      }
+    }
+  } else {
+    G.bossT -= dt;
+    if (G.bossT <= 0 && !G.boss) {
+      G.bossCount++;
+      spawnBoss();
+      G.bossT = CFG.bossEvery;
+    }
   }
 }
 
+/* spawn point at the rim of a random open void */
+function voidSpawnPos(open) {
+  const v = pick(open);
+  const a = rand(0, TAU), d = v.r * rand(1.1, 1.6);
+  return {
+    x: clamp(v.x + Math.cos(a) * d, 24, CFG.world.w - 24),
+    y: clamp(v.y + Math.sin(a) * d, 24, CFG.world.h - 24),
+  };
+}
+
 /* ---------------- boss: WARDEN ---------------- */
-function spawnBoss() {
+function spawnBoss(x, y) {
   const n = G.bossCount;
   const hp = 1100 * (1 + (n - 1) * 0.8) * (1 + G.time / 300);
-  const pos = spawnRing(120);
+  const pos = (x === undefined) ? spawnRing(120) : { x, y };
   const b = {
     type: 'boss', boss: true,
+    storyBoss: false, voidRef: null, // storyline: the void this boss emerged from
     x: pos.x, y: pos.y, vx: 0, vy: 0,
     hp, maxhp: hp,
     spd: 95, dmg: 24 * CFG.dmgMul(G.time), r: 46 * S + 14,
@@ -862,6 +984,7 @@ function killEnemy(e) {
     el.bossbar.classList.add('hidden');
     AU.bossDie();
     toast('WARDEN DESTROYED  +1500');
+    if (e.storyBoss && G.story && G.story.phase !== 'off') storyBossDown(e);
   } else if (e.elite) {
     for (let i = 0; i < 5; i++) dropShard(e.x, e.y, e.xp / 5);
     if (Math.random() < CFG.eliteHealCh) dropHeal(e.x, e.y, 25);
@@ -949,6 +1072,8 @@ function applyUpgrade(id) {
 const el = {};
 ['hud', 'menu', 'levelup', 'paused', 'gameover', 'cards', 'hpfill', 'hptext',
  'hpbar', 'xpfill', 'lvltext', 'nukeline', 'timer', 'score', 'bossbar', 'bossfill',
+ 'storyline', 'badgeline',
+ 'storydone', 'storydtitle', 'storydtag', 'storydstats', 'storycontinue', 'storymenu',
  'stats', 'newbest', 'bestline', 'ptsline', 'toast', 'warnbanner',
  'store', 'storebtn', 'storeback', 'storepts', 'storeups', 'storeitems', 'storeweapons',
  'startbtn', 'retrybtn', 'menubtn', 'resumebtn', 'quitbtn', 'pausebtn', 'mutebtn',
@@ -990,6 +1115,20 @@ function updateHUD() {
   el.timer.textContent = fmtTime(G.time);
   el.score.textContent = Math.floor(G.score).toLocaleString('en-US');
   if (G.boss) el.bossfill.style.width = clamp(G.boss.hp / G.boss.maxhp, 0, 1) * 100 + '%';
+  // storyline status line
+  const st = G.story;
+  if (st && st.phase === 'calm') {
+    el.storyline.classList.remove('hidden');
+    const left = STORY.tearAt - G.time;
+    el.storyline.textContent = '◈ RUPTURE IN ' + fmtTime(Math.max(0, left));
+    el.storyline.classList.toggle('soon', left < 15);
+  } else if (st && (st.phase === 'voidwar' || st.phase === 'rupture')) {
+    el.storyline.classList.remove('hidden');
+    el.storyline.textContent = '◈ VOIDS SEALED ' + st.bossesDown + '/' + STORY.bossesToClose;
+    el.storyline.classList.remove('soon');
+  } else {
+    el.storyline.classList.add('hidden');
+  }
 }
 
 function onLevelUp() {
@@ -1038,12 +1177,8 @@ function startGame() {
   } catch (e) {}
 }
 
-function gameOver() {
-  G.mode = 'gameover';
-  AU.boom(true);
-  addShake(0.8);
-  const p = G.player;
-  spawnParts(p.x, p.y, COL.player, 60, 420, 1.1, 6);
+/* shared end-of-run bookkeeping: best score + point payout */
+function settleRun() {
   const isBest = G.score > G.best;
   if (isBest) {
     G.best = G.score;
@@ -1051,13 +1186,30 @@ function gameOver() {
   }
   const earned = Math.floor(G.score / SHOP.ptsDiv);
   if (earned > 0) { META.pts += earned; saveMeta(); }
+  return { isBest, earned };
+}
+
+function gameOver() {
+  G.mode = 'gameover';
+  AU.boom(true);
+  addShake(0.8);
+  const p = G.player;
+  spawnParts(p.x, p.y, COL.player, 60, 420, 1.1, 6);
+  const { isBest, earned } = settleRun();
+  const upTotal = Object.values(G.upgrades).reduce((a, b) => a + b, 0);
+  const st = G.story;
+  const storyTxt = (st && st.phase !== 'off')
+    ? 'LOOP ' + (st.loop + 1) + ' · ' + st.bossesDown + '/' + STORY.bossesToClose + ' SEALED'
+    : '—';
   el.stats.innerHTML =
     '<div><div class="sv">' + Math.floor(G.score).toLocaleString('en-US') + '</div><div class="sl">SCORE</div></div>' +
     '<div><div class="sv">' + fmtTime(G.time) + '</div><div class="sl">SURVIVED</div></div>' +
     '<div><div class="sv">' + G.kills + '</div><div class="sl">KILLS</div></div>' +
     '<div><div class="sv">' + G.level + '</div><div class="sl">LEVEL</div></div>' +
     '<div><div class="sv">+' + earned.toLocaleString('en-US') + '</div><div class="sl">POINTS EARNED</div></div>' +
-    '<div><div class="sv">' + WEAPONS[META.weapon].name + '</div><div class="sl">WEAPON</div></div>';
+    '<div><div class="sv">' + WEAPONS[META.weapon].name + '</div><div class="sl">WEAPON</div></div>' +
+    '<div><div class="sv">' + upTotal + '</div><div class="sl">UPGRADES</div></div>' +
+    '<div><div class="sv">' + storyTxt + '</div><div class="sl">VOID STORY</div></div>';
   el.newbest.classList.toggle('hidden', !isBest);
   el.bestline.textContent = G.best > 0 ? 'BEST  ' + G.best.toLocaleString('en-US') : '';
   setTimeout(() => {
@@ -1182,6 +1334,7 @@ function renderStore() {
 function refreshMenuPts() {
   el.ptsline.textContent = '◈ ' + META.pts.toLocaleString('en-US') + ' PTS';
   el.bestline.textContent = G.best > 0 ? 'BEST  ' + G.best.toLocaleString('en-US') : '';
+  renderBadges();
 }
 function openStore() {
   AU.init(); AU.click();
@@ -1316,6 +1469,13 @@ const HELP_TEXT = {
   // progression
   xpb: 'XP needed for level L = base × L^power. Lower base = faster early levels.',
   xpp: 'Exponent of the XP curve. Higher = later levels cost much more XP.',
+  // storyline
+  story_on: 'Master switch for the VOIDSTORM storyline (calm → rupture → void war). Takes effect on run start.',
+  story_tearat: 'Seconds of calm before the tears rupture into voids. Lower it to reach the action faster while testing.',
+  story_bosses: 'How many WARDEN kills it takes to seal every void and complete the storyline.',
+  story_bossfirst: 'Seconds after the rupture before the first WARDEN emerges from a void.',
+  story_bossevery: 'Seconds between WARDEN emergences during the void war.',
+  story_hold: 'How long normal spawning stays paused after the rupture blast.',
   // points
   pts: 'Your meta-point bank. Points persist between runs and buy store upgrades.',
   // shop economy
@@ -1448,6 +1608,26 @@ function renderDev() {
   num(g, 'XP base', CFG, 'xpBase', 0.5, 1, 200, 1, 'xpb');
   num(g, 'XP power', CFG, 'xpPow', 0.01, 1, 3, 2, 'xpp');
 
+  // ---- storyline (next run) ----
+  b.appendChild(devSection('STORYLINE · applies on run start'));
+  g = devGrid(); b.appendChild(g);
+  num(g, 'Storyline on/off', STORY, 'on', 1, 0, 1, 0, 'story_on');
+  num(g, 'Tear at (s)', STORY, 'tearAt', 5, 10, 600, 0, 'story_tearat');
+  num(g, 'Bosses to close', STORY, 'bossesToClose', 1, 1, 10, 0, 'story_bosses');
+  num(g, 'Void boss first (s)', STORY, 'voidBossFirst', 5, 5, 300, 0, 'story_bossfirst');
+  num(g, 'Void boss every (s)', STORY, 'voidBossEvery', 5, 10, 600, 0, 'story_bossevery');
+  num(g, 'Rupture hold (s)', STORY, 'ruptureHold', 1, 0, 30, 0, 'story_hold');
+  const rbtn = document.createElement('button');
+  rbtn.className = 'ghostbtn';
+  rbtn.textContent = '⏩ TRIGGER RUPTURE NOW';
+  rbtn.style.marginTop = '6px';
+  rbtn.addEventListener('click', () => {
+    if (G.story && G.story.phase === 'calm') { startRupture(); toast('RUPTURE TRIGGERED'); }
+    else toast('NO CALM PHASE ACTIVE');
+    AU.click();
+  });
+  b.appendChild(rbtn);
+
   // ---- points ----
   b.appendChild(devSection('POINTS · applies immediately'));
   g = devGrid(); b.appendChild(g);
@@ -1480,6 +1660,7 @@ function renderDev() {
 
 function devResetAll() {
   DEVPARAMS.forEach((k) => { CFG[k] = CFG_DEFAULTS[k]; });
+  Object.assign(STORY, STORY_DEFAULTS);
   Object.keys(ETYPES).forEach((t) => {
     Object.keys(ETYPES_DEFAULTS[t]).forEach((k) => {
       if (typeof ETYPES_DEFAULTS[t][k] === 'number') ETYPES[t][k] = ETYPES_DEFAULTS[t][k];
@@ -1643,6 +1824,8 @@ try {
   if (localStorage.getItem(SHOPDEV_KEY) === '1') el.shopdevbtn.classList.remove('hidden');
 } catch (e) {}
 el.resumebtn.addEventListener('click', togglePause);
+el.storycontinue.addEventListener('click', continueStory);
+el.storymenu.addEventListener('click', storyExitToMenu);
 el.quitbtn.addEventListener('click', () => {
   AU.click();
   G.mode = 'menu';
@@ -1662,6 +1845,263 @@ el.mutebtn.addEventListener('click', () => {
 document.addEventListener('visibilitychange', () => {
   if (document.hidden && G.mode === 'playing') togglePause();
 });
+
+/* ============================================================
+   STORYLINE — "VOIDSTORM"
+   calm: beginner arena, tears forming in the background
+   rupture (t = tearAt): tears explode into voids, field wiped,
+     spawns paused, arena expands to full size
+   voidwar: void-touched enemies crawl out of the voids, a WARDEN
+     emerges from one void at a time; each boss kill seals its void
+   complete: all voids sealed -> congrats modal -> infinite loops
+   ============================================================ */
+
+/* jagged crack polyline, used for tears and sealed scars */
+function tearPts(x, y, spread) {
+  const pts = [{ x, y }];
+  let a = rand(0, TAU);
+  for (let i = 0; i < 6; i++) {
+    a += rand(-0.85, 0.85);
+    const len = rand(spread * 0.28, spread * 0.5);
+    const l = pts[i];
+    pts.push({ x: l.x + Math.cos(a) * len, y: l.y + Math.sin(a) * len });
+  }
+  return pts;
+}
+function genTear(x, y) {
+  const main = tearPts(x, y, 130);
+  const b0 = main[2 + irand(0, 2)];
+  return { pts: main, branch: tearPts(b0.x, b0.y, 70), seed: rand(0, TAU) };
+}
+
+function updateStory(dt) {
+  const st = G.story;
+  if (!st || st.phase === 'off') return;
+  const t = G.time;
+  if (st.phase === 'calm') {
+    if (!st.warned && t >= STORY.tearAt - 10) {
+      st.warned = true;
+      toast('⚠ SPATIAL INSTABILITY DETECTED');
+      AU.warn();
+    }
+    if (t >= STORY.tearAt) startRupture();
+  } else if (st.phase === 'rupture') {
+    st.ruptureT += dt;
+    // arena walls explode outward over 2.5s
+    const k = clamp(st.ruptureT / 2.5, 0, 1);
+    const e = 1 - Math.pow(1 - k, 3);
+    CFG.world.w = lerp(STORY.smallW, STORY.bigW, e);
+    CFG.world.h = lerp(STORY.smallH, STORY.bigH, e);
+    for (const v of st.voids) v.open = Math.min(1, v.open + dt * 1.4);
+    if (st.ruptureT >= 3 && !st.warAnnounced) {
+      st.warAnnounced = true;
+      st.phase = 'voidwar';
+      st.bossT = STORY.voidBossFirst;
+      G.eliteT = CFG.eliteEvery;
+      toast('SEAL THE VOIDS — 0/' + STORY.bossesToClose);
+    }
+  } else if (st.phase === 'voidwar') {
+    for (const v of st.voids) v.open = Math.min(1, v.open + dt * 1.4);
+    // ambient sparks spiraling around open voids
+    if (Math.random() < dt * 6) {
+      const open = st.voids.filter(v => !v.sealed);
+      if (open.length) {
+        const v = pick(open), a = rand(0, TAU);
+        spawnParts(v.x + Math.cos(a) * v.r * 2, v.y + Math.sin(a) * v.r * 2, '#b14dff', 1, 40, 0.9, 3);
+      }
+    }
+  }
+  // sealed scars fade in any phase
+  for (let i = st.scars.length - 1; i >= 0; i--) {
+    st.scars[i].life -= dt;
+    if (st.scars[i].life <= 0) st.scars.splice(i, 1);
+  }
+  if (st.phase === 'complete') {
+    st.doneT -= dt;
+    // wait out any open level-up card choice before showing the modal
+    if (st.doneT <= 0 && G.mode === 'playing') showStoryDone();
+  }
+}
+
+function startRupture() {
+  const st = G.story;
+  st.phase = 'rupture';
+  st.ruptureT = 0;
+  // tears rip open into voids
+  st.voids = st.tears.map(tr => ({
+    x: tr.pts[0].x, y: tr.pts[0].y, r: rand(58, 80),
+    seed: rand(0, TAU), open: 0, sealed: false,
+  }));
+  st.tears = [];
+  // the blast wipes the field (full kill rewards — a celebratory clear)
+  for (const e of G.enemies.slice()) {
+    if (e.boss) damageEnemy(e, 1500, 0, 0, false);
+    else killEnemy(e);
+  }
+  G.ebullets.length = 0;
+  st.spawnHold = STORY.ruptureHold;
+  G.flash = 1;
+  addShake(1);
+  AU.rupture();
+  showWarn('⚠ THE VOID TEARS OPEN ⚠');
+  toast('SPACE ITSELF IS RUPTURED');
+  // wall debris along the old border
+  for (let i = 0; i < 80; i++) {
+    const side = irand(0, 3);
+    const x = side < 2 ? rand(0, STORY.smallW) : (side === 2 ? 0 : STORY.smallW);
+    const y = side < 2 ? (side === 0 ? 0 : STORY.smallH) : rand(0, STORY.smallH);
+    spawnParts(x, y, pick(['#46f6ff', '#ffffff', '#b14dff']), 1, rand(120, 380), rand(0.6, 1.4), rand(3, 6));
+  }
+  updateHUD();
+}
+
+/* a WARDEN emerges from a random open void; killing it seals that void */
+function storySpawnBoss() {
+  const st = G.story;
+  const open = st.voids.filter(v => !v.sealed);
+  const v = open.length ? pick(open) : null;
+  const px = v ? v.x + rand(-40, 40) : CFG.world.w / 2;
+  const py = v ? v.y + rand(-40, 40) : CFG.world.h / 2;
+  spawnBoss(px, py);
+  if (G.boss) { G.boss.storyBoss = true; G.boss.voidRef = v; }
+  if (v) {
+    G.shocks.push({ x: v.x, y: v.y, r: 8, maxR: v.r * 3.4, life: 0.8, maxLife: 0.8, color: '#b14dff' });
+    addShake(0.4);
+  }
+}
+
+function storyBossDown(b) {
+  const st = G.story;
+  st.bossesDown++;
+  if (b.voidRef) sealVoid(b.voidRef);
+  AU.seal();
+  const left = STORY.bossesToClose - st.bossesDown;
+  addFloat(b.x, b.y - 90, 'VOID SEALED  ' + st.bossesDown + '/' + STORY.bossesToClose, '#7df9ff', 22);
+  if (left <= 0) completeStory();
+  else {
+    toast('VOID SEALED — ' + left + ' REMAIN' + (left === 1 ? 'S' : ''));
+    showWarn('◈ VOID SEALED ◈');
+  }
+  updateHUD();
+}
+
+/* a sealed void implodes, leaving a stitched scar that slowly fades */
+function sealVoid(v) {
+  const st = G.story;
+  v.sealed = true;
+  G.shocks.push({ x: v.x, y: v.y, r: 10, maxR: v.r * 3.2, life: 0.7, maxLife: 0.7, color: '#7df9ff' });
+  for (let i = 0; i < 26; i++) {
+    const a = rand(0, TAU), d = rand(v.r * 1.5, v.r * 3);
+    spawnParts(v.x + Math.cos(a) * d, v.y + Math.sin(a) * d,
+      pick(['#7df9ff', '#ffffff', '#b14dff']), 1, 60, 0.8, 4);
+  }
+  G.flash = Math.max(G.flash, 0.5);
+  addShake(0.5);
+  st.scars.push({ pts: tearPts(v.x, v.y, v.r * 1.6), life: 45, maxLife: 45, seed: rand(0, TAU) });
+}
+
+function completeStory() {
+  const st = G.story;
+  st.phase = 'complete';
+  st.doneT = 1.8;
+  st.spawnHold = 9999;
+  st.voids.forEach(v => { if (!v.sealed) sealVoid(v); });
+  G.flash = 1;
+  addShake(0.9);
+  AU.level();
+  setTimeout(() => AU.bossDie(), 300);
+  if (G.player) G.player.inv = Math.max(G.player.inv, 3);
+  showWarn('★ ALL VOIDS SEALED ★');
+  updateHUD();
+}
+
+function showStoryDone() {
+  const st = G.story;
+  G.mode = 'storydone';
+  const loop = st.loop;
+  if (loop === 0) {
+    BADGES.sealed = 1;
+    el.storydtitle.textContent = 'VOID SEALED';
+    el.storydtag.textContent = 'the rift is closed — the void remembers you';
+  } else {
+    BADGES.storm++;
+    el.storydtitle.textContent = 'VOIDSTORM QUELLED';
+    el.storydtag.textContent = 'loop ' + (loop + 1) + ' closed — the void remembers you';
+    if (loop === 1) {
+      unlockDev(); // beating the first infinite loop unlocks the dev console
+      setTimeout(() => toast('DEVELOPER OPTIONS UNLOCKED'), 600);
+    }
+  }
+  saveBadges(); renderBadges();
+  el.storydstats.innerHTML =
+    '<div><div class="sv">' + fmtTime(G.time) + '</div><div class="sl">TIME</div></div>' +
+    '<div><div class="sv">' + Math.floor(G.score).toLocaleString('en-US') + '</div><div class="sl">SCORE</div></div>' +
+    '<div><div class="sv">' + G.kills + '</div><div class="sl">KILLS</div></div>' +
+    '<div><div class="sv">' + (loop + 1) + '</div><div class="sl">LOOP</div></div>';
+  el.storycontinue.textContent = loop === 0 ? 'CONTINUE — VOIDSTORM' : 'CONTINUE — LOOP ' + (loop + 2);
+  el.storydone.classList.remove('hidden');
+  AU.level();
+}
+
+/* infinite mode: same storyline, voids burst open immediately,
+   difficulty (run clock) picks up exactly where it left off */
+function continueStory() {
+  AU.click();
+  el.storydone.classList.add('hidden');
+  const st = G.story;
+  st.loop++;
+  st.bossesDown = 0;
+  st.phase = 'voidwar';
+  st.spawnHold = 3;
+  st.bossT = STORY.voidBossFirst;
+  st.scars.length = 0;
+  st.voids = [];
+  const p = G.player;
+  for (let i = 0; i < STORY.bossesToClose; i++) {
+    let x = 0, y = 0, tries = 0;
+    do {
+      x = rand(160, CFG.world.w - 160);
+      y = rand(160, CFG.world.h - 160);
+      tries++;
+    } while (tries < 30 && (Math.hypot(x - p.x, y - p.y) < 320 ||
+      st.voids.some(v => Math.hypot(x - v.x, y - v.y) < 320)));
+    st.voids.push({ x, y, r: rand(58, 80), seed: rand(0, TAU), open: 0, sealed: false });
+  }
+  G.flash = 0.7;
+  addShake(0.8);
+  AU.surge();
+  showWarn('⚠ VOIDSTORM SURGE — LOOP ' + (st.loop + 1) + ' ⚠');
+  toast('THE VOIDS TEAR OPEN AGAIN');
+  G.mode = 'playing';
+  updateHUD();
+}
+
+function storyExitToMenu() {
+  AU.click();
+  el.storydone.classList.add('hidden');
+  settleRun();
+  G.mode = 'menu';
+  el.hud.classList.add('hidden');
+  el.menu.classList.remove('hidden');
+  refreshMenuPts(); // also re-renders badges
+}
+
+/* ---------------- story badges (persisted) ---------------- */
+const BADGES = { sealed: 0, storm: 0 };
+const BADGE_KEY = 'neonvoid_badges';
+function saveBadges() {
+  try { localStorage.setItem(BADGE_KEY, JSON.stringify(BADGES)); } catch (e) {}
+}
+try {
+  const _b = JSON.parse(localStorage.getItem(BADGE_KEY) || 'null');
+  if (_b) { BADGES.sealed = _b.sealed | 0; BADGES.storm = _b.storm | 0; }
+} catch (e) {}
+function renderBadges() {
+  const s1 = BADGES.sealed > 0, s2 = BADGES.storm > 0;
+  el.badgeline.innerHTML =
+    '<span class="badge' + (s1 ? ' on' : '') + '">🛡 VOID SEALED</span>' +
+    '<span class="badge' + (s2 ? ' on' : '') + '">🌀 VOIDSTORM' + (BADGES.storm > 1 ? ' ×' + BADGES.storm : '') + '</span>';
+}
 
 /* ============================================================
    UPDATE
@@ -1860,6 +2300,7 @@ function updateEBullets(dt) {
 function update(dt) {
   G.time += dt;
   G.score += dt * 5;
+  updateStory(dt);
   let inp = readInput();
   if (G.demo) inp = demoInput();
   if (G.player.alive) updatePlayer(dt, inp);
@@ -2009,6 +2450,161 @@ function drawMenuBG() {
   ctx.shadowBlur = 0;
 }
 
+/* ---- in-game outer-space background: world-space starfield + nebulae ---- */
+let wstars = [];
+function buildWStars() {
+  wstars = [];
+  for (let i = 0; i < 420; i++) {
+    wstars.push({ x: rand(0, STORY.bigW), y: rand(0, STORY.bigH), z: rand(0.25, 1), tw: rand(0, TAU) });
+  }
+}
+const NEBULAE = [
+  { x: 480, y: 380, r: 560, c: '112,60,200' },
+  { x: 1720, y: 1120, r: 640, c: '20,130,170' },
+  { x: 1560, y: 320, r: 430, c: '190,50,130' },
+  { x: 420, y: 1220, r: 500, c: '40,70,190' },
+];
+function drawSpaceBG() {
+  const t = performance.now() / 1000;
+  const vh = viewHalf();
+  const x0 = cam.x - vh.hw, x1 = cam.x + vh.hw, y0 = cam.y - vh.hh, y1 = cam.y + vh.hh;
+  for (const nb of NEBULAE) {
+    if (nb.x + nb.r < x0 || nb.x - nb.r > x1 || nb.y + nb.r < y0 || nb.y - nb.r > y1) continue;
+    const g = ctx.createRadialGradient(nb.x, nb.y, 0, nb.x, nb.y, nb.r);
+    g.addColorStop(0, 'rgba(' + nb.c + ',0.13)');
+    g.addColorStop(1, 'rgba(' + nb.c + ',0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(nb.x - nb.r, nb.y - nb.r, nb.r * 2, nb.r * 2);
+  }
+  ctx.fillStyle = '#cfeaff';
+  for (const s of wstars) {
+    if (s.x < x0 || s.x > x1 || s.y < y0 || s.y > y1) continue;
+    ctx.globalAlpha = (0.3 + 0.7 * Math.abs(Math.sin(t * 1.4 + s.tw))) * s.z;
+    const sz = 1 + s.z * 2.2;
+    ctx.fillRect(s.x, s.y, sz, sz);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function strokeTear(pts, color, width, glow) {
+  ctx.beginPath();
+  ctx.moveTo(pts[0].x, pts[0].y);
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+  if (glow) {
+    ctx.strokeStyle = color; ctx.globalAlpha = 0.25;
+    ctx.lineWidth = width * 3.4; ctx.stroke(); ctx.globalAlpha = 1;
+  }
+  ctx.strokeStyle = color; ctx.lineWidth = width; ctx.stroke();
+}
+
+/* tears forming during the calm phase — grow brighter toward tearAt */
+function drawTears() {
+  const st = G.story;
+  if (!st || st.phase !== 'calm' || !st.tears.length) return;
+  const t = performance.now() / 1000;
+  const k = clamp(G.time / STORY.tearAt, 0, 1);
+  const g = Math.pow(k, 1.6);                    // slow start, violent finish
+  const surge = k > 0.85 ? (k - 0.85) / 0.15 : 0; // final stretch: flare
+  const flick = 0.75 + 0.25 * Math.sin(t * (2 + g * 14) + 1);
+  const w = (1.5 + g * 5 + surge * 4) * flick;
+  const col = g < 0.5 ? '#46f6ff' : g < 0.85 ? '#b14dff' : '#ff4dd9';
+  ctx.save();
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  ctx.shadowColor = col; ctx.shadowBlur = 6 + g * 22 + surge * 18;
+  for (const tr of st.tears) {
+    const wob = Math.sin(t * 3 + tr.seed) * 2 * g;
+    ctx.save();
+    ctx.translate(wob, -wob);
+    strokeTear(tr.pts, '#05060f', w * 1.9, false); // dark core
+    strokeTear(tr.pts, col, w, true);              // neon rim
+    strokeTear(tr.branch, col, w * 0.6, false);
+    if (g > 0.6) strokeTear(tr.pts, '#ffffff', w * 0.32, false); // white-hot center
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+/* open voids: black cores with marching violet rims */
+function drawVoids() {
+  const st = G.story;
+  if (!st || !st.voids.length) return;
+  const t = performance.now() / 1000;
+  for (const v of st.voids) {
+    if (v.sealed || v.open <= 0.01) continue;
+    const pulse = 1 + Math.sin(t * 3.1 + v.seed) * 0.07;
+    const rx = v.r * v.open * pulse, ry = v.r * 0.74 * v.open * pulse;
+    ctx.save();
+    ctx.translate(v.x, v.y);
+    ctx.rotate(Math.sin(v.seed) * 0.6);
+    // violet halo
+    const g = ctx.createRadialGradient(0, 0, rx * 0.4, 0, 0, rx * 2.1);
+    g.addColorStop(0, 'rgba(177,77,255,0.28)');
+    g.addColorStop(1, 'rgba(177,77,255,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(-rx * 2.1, -rx * 2.1, rx * 4.2, rx * 4.2);
+    // black core
+    ctx.fillStyle = '#01020a';
+    ctx.beginPath(); ctx.ellipse(0, 0, rx, ry, 0, 0, TAU); ctx.fill();
+    // marching rims
+    ctx.setLineDash([26, 18]);
+    ctx.lineDashOffset = t * 60;
+    ctx.strokeStyle = '#b14dff'; ctx.globalAlpha = 0.35; ctx.lineWidth = 9;
+    ctx.beginPath(); ctx.ellipse(0, 0, rx, ry, 0, 0, TAU); ctx.stroke();
+    ctx.setLineDash([14, 10]);
+    ctx.lineDashOffset = -t * 46;
+    ctx.globalAlpha = 1; ctx.lineWidth = 3;
+    ctx.shadowColor = '#b14dff'; ctx.shadowBlur = 16;
+    ctx.beginPath(); ctx.ellipse(0, 0, rx, ry, 0, 0, TAU); ctx.stroke();
+    ctx.setLineDash([]);
+    // inner swirl
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = '#e8c8ff'; ctx.lineWidth = 2; ctx.globalAlpha = 0.8;
+    const a0 = t * 1.8 + v.seed;
+    ctx.beginPath(); ctx.ellipse(0, 0, rx * 0.55, ry * 0.55, 0, a0, a0 + 4.2); ctx.stroke();
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
+  ctx.setLineDash([]);
+  ctx.shadowBlur = 0;
+}
+
+/* sealed rifts: stitched scars of light that slowly fade */
+function drawScars() {
+  const st = G.story;
+  if (!st || !st.scars.length) return;
+  const t = performance.now() / 1000;
+  ctx.save();
+  ctx.lineCap = 'round';
+  for (const s of st.scars) {
+    const a = clamp(s.life / s.maxLife, 0, 1);
+    ctx.globalAlpha = a * 0.85;
+    ctx.strokeStyle = '#7df9ff';
+    ctx.setLineDash([10, 8]);
+    ctx.lineDashOffset = t * 20;
+    ctx.shadowColor = '#7df9ff'; ctx.shadowBlur = 10;
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.moveTo(s.pts[0].x, s.pts[0].y);
+    for (let i = 1; i < s.pts.length; i++) ctx.lineTo(s.pts[i].x, s.pts[i].y);
+    ctx.stroke();
+    // stitch ticks across the seam
+    ctx.setLineDash([]);
+    ctx.lineWidth = 1.5;
+    for (let i = 0; i < s.pts.length - 1; i++) {
+      const p0 = s.pts[i], p1 = s.pts[i + 1];
+      const mx = (p0.x + p1.x) / 2, my = (p0.y + p1.y) / 2;
+      const dx = p1.x - p0.x, dy = p1.y - p0.y, d = Math.hypot(dx, dy) || 1;
+      const nx = -dy / d * 7, ny = dx / d * 7;
+      ctx.beginPath();
+      ctx.moveTo(mx - nx, my - ny);
+      ctx.lineTo(mx + nx, my + ny);
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+  ctx.globalAlpha = 1; ctx.setLineDash([]); ctx.shadowBlur = 0;
+}
+
 function draw() {
   // main menu gets the full-screen Tron backdrop instead of the world
   if (G.mode === 'menu') {
@@ -2020,7 +2616,6 @@ function draw() {
   ctx.fillStyle = COL.bg;
   ctx.fillRect(0, 0, W, H);
   ctx.save();
-  // camera + screen shake (shake applied in screen space)
   let shx = 0, shy = 0;
   if (G.trauma > 0) {
     const s = G.trauma * G.trauma * 16;
@@ -2030,11 +2625,17 @@ function draw() {
   ctx.scale(cam.zoom, cam.zoom);
   ctx.translate(-cam.x, -cam.y);
 
+  // outer-space backdrop + storyline layers (world space)
+  drawSpaceBG();
+  drawTears();
+  drawVoids();
+  drawScars();
+
   // grid (world space, visible region only)
   const vh = viewHalf();
   const x0 = cam.x - vh.hw - 40, x1 = cam.x + vh.hw + 40;
   const y0 = cam.y - vh.hh - 40, y1 = cam.y + vh.hh + 40;
-  ctx.strokeStyle = 'rgba(90,140,255,0.07)';
+  ctx.strokeStyle = 'rgba(130,100,255,0.06)';
   ctx.lineWidth = 1;
   ctx.beginPath();
   const gs = 64;
@@ -2050,6 +2651,17 @@ function draw() {
   ctx.strokeStyle = 'rgba(70,246,255,0.35)';
   ctx.lineWidth = 3;
   ctx.strokeRect(2, 2, CFG.world.w - 4, CFG.world.h - 4);
+  // rupture: fading echo of the old small-arena walls as they explode outward
+  const rst = G.story;
+  if (rst && rst.phase === 'rupture') {
+    const k = clamp(rst.ruptureT / 2.5, 0, 1);
+    ctx.save();
+    ctx.globalAlpha = 1 - k;
+    ctx.strokeStyle = 'rgba(70,246,255,0.6)';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(2, 2, STORY.smallW - 4, STORY.smallH - 4);
+    ctx.restore();
+  }
 
   // pickups
   const tt = performance.now() / 1000;
@@ -2214,11 +2826,11 @@ function draw() {
   }
   ctx.globalAlpha = 1;
 
-  // nuke shockwaves (world space)
+  // shockwaves (world space)
   for (const s of G.shocks) {
     const a = clamp(s.life / s.maxLife, 0, 1);
     ctx.globalAlpha = a * 0.85;
-    ctx.strokeStyle = '#ffd76a';
+    ctx.strokeStyle = s.color || '#ffd76a';
     ctx.lineWidth = 12 * a + 2;
     ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, TAU); ctx.stroke();
     ctx.strokeStyle = '#ffffff';
@@ -2388,7 +3000,7 @@ function frame(now) {
     if (n === 5) acc = 0;
     hudT -= dt;
     if (hudT <= 0) { hudT = 0.12; updateHUD(); }
-  } else if (G.mode === 'menu' || G.mode === 'gameover') {
+  } else if (G.mode === 'menu' || G.mode === 'gameover' || G.mode === 'storydone') {
     // ambient drift behind overlays
     updateParts(dt);
   }
@@ -2409,6 +3021,7 @@ function frame(now) {
    BOOT
    ============================================================ */
 resize();
+buildWStars();
 refreshMenuPts();
 orientRefresh('start');
 window.addEventListener('blur', () => { IN.keys = {}; });
@@ -2428,7 +3041,7 @@ if (window.visualViewport) {
 }
 
 // headless test hook
-window.__NV = { G, CFG, IN, META, WEAPONS, startGame, spawnEnemy, gainXP, damagePlayer, damageEnemy, rollUpgrades, applyUpgrade, fireNuke, update, draw, updateHUD, updateCamera, ETYPES, PBASE, SHOP, META_UPS, META_ITEMS, GAME_VERSION, devLogoTap, unlockDev, renderDev, devResetAll, openDev, devShopTap, unlockShopDev, renderShopDev, shopDevReset, openShopDev, wmod, setHelp, openHelp, closeHelp };
+window.__NV = { G, CFG, IN, META, WEAPONS, STORY, BADGES, startGame, spawnEnemy, gainXP, damagePlayer, damageEnemy, rollUpgrades, applyUpgrade, fireNuke, update, draw, updateHUD, updateCamera, ETYPES, PBASE, SHOP, META_UPS, META_ITEMS, GAME_VERSION, devLogoTap, unlockDev, renderDev, devResetAll, openDev, devShopTap, unlockShopDev, renderShopDev, shopDevReset, openShopDev, wmod, setHelp, openHelp, closeHelp, startRupture, storySpawnBoss, continueStory, showStoryDone };
 
 if (window.location.hash.indexOf('autodemo') >= 0) {
   G.demo = true;
