@@ -19,6 +19,8 @@ const CFG = {
   maxEnemies: 90,
   maxParts: 340,
   maxFloats: 40,
+  world: { w: 2200, h: 1500 },  // arena is ~2.5-3x a phone viewport
+  camZoom: 0.85,                // zoomed out slightly
   xpNeed: (lvl) => Math.round(8 * Math.pow(lvl, 1.42)),
   spawnInterval: (t) => clamp(1.15 - t * 0.0058, 0.26, 1.15),
   batchSize: (t) => 1 + Math.floor(t / 55),
@@ -109,6 +111,11 @@ const AU = {
     this.tone(big ? 90 : 140, big ? 0.45 : 0.25, 'sine', 0.5, 40);
   },
   pickup(n) { this.tone(760 + Math.min(n, 12) * 45, 0.08, 'sine', 0.22, 1500); },
+  nuke() {
+    this.noise(1.0, 0.8, 500);
+    this.tone(60, 0.9, 'sine', 0.7, 30);
+    this.tone(880, 0.5, 'sawtooth', 0.25, 110, 0.05);
+  },
   level() { [523, 659, 784, 1046].forEach((f, i) => this.tone(f, 0.16, 'triangle', 0.35, null, i * 0.07)); },
   hurt() { this.tone(170, 0.28, 'sawtooth', 0.5, 55); this.noise(0.2, 0.3, 500); },
   dash() { this.noise(0.18, 0.3, 3200); },
@@ -127,6 +134,26 @@ const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
 let W = 0, H = 0, DPR = 1, S = 1;   // S = gameplay scale (min dimension / 800)
 
+/* camera: follows player through the world, zoomed out slightly */
+const cam = { x: CFG.world.w / 2, y: CFG.world.h / 2, zoom: CFG.camZoom };
+function viewHalf() {
+  return { hw: W / (2 * cam.zoom), hh: H / (2 * cam.zoom) };
+}
+function updateCamera() {
+  const p = G.player;
+  if (p && G.mode !== 'menu' && G.mode !== 'gameover') {
+    cam.x = p.x; cam.y = p.y;
+  } else {
+    // menu ambience: slow drift around world center
+    const t = performance.now() / 1000;
+    cam.x = CFG.world.w / 2 + Math.cos(t * 0.08) * 260;
+    cam.y = CFG.world.h / 2 + Math.sin(t * 0.06) * 180;
+  }
+  const { hw, hh } = viewHalf();
+  cam.x = CFG.world.w <= hw * 2 ? CFG.world.w / 2 : clamp(cam.x, hw, CFG.world.w - hw);
+  cam.y = CFG.world.h <= hh * 2 ? CFG.world.h / 2 : clamp(cam.y, hh, CFG.world.h - hh);
+}
+
 function resize() {
   DPR = Math.min(window.devicePixelRatio || 1, 2);
   W = window.innerWidth; H = window.innerHeight;
@@ -134,14 +161,14 @@ function resize() {
   canvas.height = Math.round(H * DPR);
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
   S = Math.min(W, H) / 800;
-  // keep player inside after resize
+  // keep player inside world after resize
   if (G && G.player) {
-    G.player.x = clamp(G.player.x, 30, W - 30);
-    G.player.y = clamp(G.player.y, 30, H - 30);
+    G.player.x = clamp(G.player.x, 30, CFG.world.w - 30);
+    G.player.y = clamp(G.player.y, 30, CFG.world.h - 30);
   }
-  // dash button anchor (bottom-right)
-  IN.dashBX = W - Math.max(64, 84 * S + 30);
-  IN.dashBY = H - Math.max(96, 120 * S + 40);
+  // nuke button anchor (bottom-right)
+  IN.nukeBX = W - Math.max(64, 84 * S + 30);
+  IN.nukeBY = H - Math.max(96, 120 * S + 40);
   buildStatic(); // rebuild cached vignette for new size
 }
 window.addEventListener('resize', resize);
@@ -155,7 +182,7 @@ const IN = {
   mActive: false, mId: -1, mOX: 0, mOY: 0, mX: 0, mY: 0,
   // aim stick
   aActive: false, aId: -1, aOX: 0, aOY: 0, aX: 0, aY: 0,
-  dashBX: 0, dashBY: 0, dashQueued: false,
+  nukeBX: 0, nukeBY: 0, nukeQueued: false,
   keys: {},
   stickR: 60, // visual radius px (scaled at draw)
 };
@@ -170,10 +197,10 @@ canvas.addEventListener('touchstart', (e) => {
   AU.init();
   for (const t of e.changedTouches) {
     const p = touchPos(t);
-    // dash button hit?
-    const ddx = p.x - IN.dashBX, ddy = p.y - IN.dashBY;
+    // nuke button hit?
+    const ddx = p.x - IN.nukeBX, ddy = p.y - IN.nukeBY;
     if (ddx * ddx + ddy * ddy < 52 * 52 && G.mode === 'playing') {
-      IN.dashQueued = true;
+      IN.nukeQueued = true;
       continue;
     }
     if (p.x < W / 2 && !IN.mActive) {
@@ -221,7 +248,7 @@ document.addEventListener('dblclick', (e) => e.preventDefault(), { passive: fals
 window.addEventListener('keydown', (e) => {
   IN.keys[e.code] = true;
   AU.init();
-  if (e.code === 'Space') { IN.dashQueued = true; e.preventDefault(); }
+  if (e.code === 'Space') { IN.nukeQueued = true; e.preventDefault(); }
   if (e.code === 'KeyP' && G.mode === 'playing') togglePause();
 });
 window.addEventListener('keyup', (e) => { IN.keys[e.code] = false; });
@@ -268,9 +295,10 @@ const G = {
   trauma: 0, hitstop: 0,
   player: null,
   bullets: [], ebullets: [],
-  enemies: [], parts: [], pickups: [], floats: [],
+  enemies: [], parts: [], pickups: [], floats: [], shocks: [],
   spawnT: 0, eliteT: 0, bossT: 0, boss: null, bossCount: 0,
   upgrades: {},   // id -> stacks
+  flash: 0,       // full-screen flash (nuke)
   muted: false,
   demo: false,
   best: 0,
@@ -278,16 +306,88 @@ const G = {
 
 try { G.best = parseInt(localStorage.getItem('neonvoid_best') || '0', 10) || 0; } catch (e) {}
 
+/* ============================================================
+   META PROGRESSION — points + permanent store (localStorage)
+   ============================================================ */
+const META = {
+  pts: 0,
+  up: { dmg: 0, rate: 0, spd: 0, hull: 0, mag: 0, seek: 0 },
+  nukes: 0,          // purchased +starting nukes (max 2)
+  aegis: 0,          // shield charges per run (max 3)
+  weapons: { pulse: true, scatter: false, rail: false },
+  weapon: 'pulse',
+};
+try {
+  META.pts = parseInt(localStorage.getItem('neonvoid_pts') || '0', 10) || 0;
+  const m = JSON.parse(localStorage.getItem('neonvoid_meta') || 'null');
+  if (m) {
+    if (m.up) for (const k in META.up) META.up[k] = m.up[k] | 0;
+    META.nukes = m.nukes | 0; META.aegis = m.aegis | 0;
+    if (m.weapons) for (const k in META.weapons) META.weapons[k] = !!m.weapons[k];
+    if (m.weapon && META.weapons[m.weapon]) META.weapon = m.weapon;
+  }
+} catch (e) {}
+function saveMeta() {
+  try {
+    localStorage.setItem('neonvoid_pts', String(META.pts));
+    localStorage.setItem('neonvoid_meta', JSON.stringify({
+      up: META.up, nukes: META.nukes, aegis: META.aegis,
+      weapons: META.weapons, weapon: META.weapon,
+    }));
+  } catch (e) {}
+}
+
+const META_UPS = [
+  { id: 'dmg',  ico: '💥', name: 'HEAVY PLATING', desc: '+8% bullet damage / lvl',       max: 10, base: 60 },
+  { id: 'rate', ico: '⚡', name: 'OVERCLOCKED',   desc: '+8% fire rate / lvl',           max: 10, base: 60 },
+  { id: 'spd',  ico: '👟', name: 'ION DRIVE',     desc: '+6% move speed / lvl',          max: 10, base: 60 },
+  { id: 'hull', ico: '❤', name: 'REINFORCED',    desc: '+20 max hull / lvl',            max: 10, base: 60 },
+  { id: 'mag',  ico: '🧲', name: 'TRACTOR MK-II', desc: '+15% pickup radius / lvl',      max: 5,  base: 80 },
+  { id: 'seek', ico: '🎯', name: 'SEEKER TUNE',   desc: '+1 starting homing stage / lvl', max: 3, base: 120 },
+];
+const META_ITEMS = [
+  { id: 'nukes', ico: '☢', name: 'NUKE CACHE',   desc: '+1 starting nuke',        max: 2, base: 150 },
+  { id: 'aegis', ico: '🛡', name: 'AEGIS SHIELD', desc: '+1 shield charge per run', max: 3, base: 120 },
+];
+const WEAPONS = {
+  pulse:   { name: 'PULSE',   ico: '🔫', cost: 0,   desc: 'Standard issue. Balanced.' },
+  scatter: { name: 'SCATTER', ico: '🌪', cost: 400, desc: '+2 projectiles, -30% damage, wider spread' },
+  rail:    { name: 'RAILGUN', ico: '🔩', cost: 600, desc: '-55% fire rate, +220% damage, pierce +3' },
+};
+function metaCost(base, lvl) { return Math.round(base * Math.pow(1.65, lvl)); }
+
+/* permanent bonuses applied at run start */
+function applyMeta(p) {
+  const u = META.up;
+  p.dmg *= Math.pow(1.08, u.dmg);
+  p.fireRate *= Math.pow(1.08, u.rate);
+  p.speed *= Math.pow(1.06, u.spd);
+  p.maxhp += 20 * u.hull;
+  p.hp = p.maxhp;
+  p.magnet *= Math.pow(1.15, u.mag);
+  p.seek = Math.min(5, 1 + u.seek);
+  p.nukes = Math.min(3, 1 + META.nukes);
+  p.shields = META.aegis;
+  if (META.weapon === 'scatter') {
+    p.proj += 2; p.dmg *= 0.7; p.spreadBonus = 0.07;
+  } else if (META.weapon === 'rail') {
+    p.fireRate *= 0.45; p.dmg *= 3.2; p.pierce += 3; p.bulletSpeed *= 1.4;
+  }
+}
+
 function newPlayer() {
-  return {
-    x: W / 2, y: H / 2, vx: 0, vy: 0, r: 16 * S + 8,
+  const p = {
+    x: CFG.world.w / 2, y: CFG.world.h / 2, vx: 0, vy: 0, r: 16 * S + 8,
     hp: 100, maxhp: 100,
     speed: 300, fireRate: 4.5, dmg: 12, proj: 1, pierce: 0,
     crit: 0, bulletSpeed: 760, magnet: 95, siphon: 0,
-    fireT: 0, dashT: 0, dashCD: 3.0, dashTime: 0,
+    seek: 1, nukes: 1, shields: 0, spreadBonus: 0,
+    fireT: 0,
     faceX: 1, faceY: 0, aimX: 1, aimY: 0,
     inv: 0, alive: true,
   };
+  applyMeta(p);
+  return p;
 }
 
 function resetGame() {
@@ -297,10 +397,11 @@ function resetGame() {
   G.player = newPlayer();
   G.bullets.length = 0; G.ebullets.length = 0;
   G.enemies.length = 0; G.parts.length = 0;
-  G.pickups.length = 0; G.floats.length = 0;
+  G.pickups.length = 0; G.floats.length = 0; G.shocks.length = 0;
+  G.flash = 0;
   G.spawnT = 1.2; G.eliteT = 50; G.bossT = CFG.firstBoss;
   G.boss = null; G.bossCount = 0; G.upgrades = {};
-  IN.dashQueued = false;
+  IN.nukeQueued = false;
 }
 
 /* ============================================================
@@ -340,6 +441,14 @@ function updateParts(dt) {
     if (f.life <= 0) G.floats.splice(i, 1);
   }
   G.trauma = Math.max(0, G.trauma - dt * 1.6);
+  for (let i = G.shocks.length - 1; i >= 0; i--) {
+    const s = G.shocks[i];
+    s.life -= dt;
+    const t = 1 - Math.max(0, s.life) / s.maxLife;
+    s.r = s.maxR * (1 - Math.pow(1 - t, 3)); // ease-out expand
+    if (s.life <= 0) G.shocks.splice(i, 1);
+  }
+  G.flash = Math.max(0, G.flash - dt * 2.2);
 }
 
 /* ============================================================
@@ -355,6 +464,42 @@ function dropShard(x, y, val) {
 }
 function dropHeal(x, y, amt) {
   G.pickups.push({ kind: 'heal', x, y, vx: 0, vy: 0, val: amt, life: 10, r: 10 });
+}
+function dropNuke(x, y) {
+  const a = rand(0, TAU);
+  G.pickups.push({
+    kind: 'nuke', x: x + Math.cos(a) * 20, y: y + Math.sin(a) * 20,
+    vx: Math.cos(a) * 60, vy: Math.sin(a) * 60,
+    val: 1, life: 16, r: 12,
+  });
+}
+
+/* ---------------- NUKE — map-clearing panic button ---------------- */
+function fireNuke() {
+  const p = G.player;
+  if (!p || !p.alive || p.nukes <= 0) return;
+  p.nukes--;
+  const victims = G.enemies.slice();
+  for (const e of victims) {
+    if (e.boss) {
+      damageEnemy(e, 1200, 0, 0, false);
+      addFloat(e.x, e.y - 70, 'NUKE HIT', '#ffd76a', 22);
+    } else {
+      killEnemy(e);
+    }
+  }
+  G.ebullets.length = 0;
+  G.shocks.push({
+    x: p.x, y: p.y, r: 40,
+    maxR: Math.hypot(CFG.world.w, CFG.world.h) * 0.75,
+    life: 0.9, maxLife: 0.9,
+  });
+  G.flash = 1;
+  G.hitstop = 0.3;
+  addShake(1);
+  AU.nuke();
+  toast('☢ NUKE DETONATED');
+  updateHUD();
 }
 
 let pickupStreak = 0, pickupStreakT = 0;
@@ -382,6 +527,18 @@ function updatePickups(dt) {
         pickupStreak++; pickupStreakT = 0.9;
         AU.pickup(pickupStreak);
         spawnParts(k.x, k.y, COL.xp, 4, 120, 0.3, 3);
+      } else if (k.kind === 'nuke') {
+        if (p.nukes < 3) {
+          p.nukes++;
+          addFloat(p.x, p.y - 26, '☢ +1 NUKE', '#ffd76a', 17);
+          toast('☢ NUKE ACQUIRED');
+        } else {
+          G.score += 250;
+          addFloat(p.x, p.y - 26, '+250', '#ffd76a', 15);
+        }
+        spawnParts(k.x, k.y, '#ffd76a', 12, 200, 0.5, 4);
+        AU.pickup(9);
+        updateHUD();
       } else {
         p.hp = Math.min(p.maxhp, p.hp + k.val);
         addFloat(p.x, p.y - 26, '+' + k.val, COL.heal, 16);
@@ -413,20 +570,23 @@ const ETYPES = {
   tank:   { hp: 150, spd: 72,  dmg: 20, r: 24, score: 60, xp: 6, color: COL.tank,    shape: 6 },
 };
 
-function edgePoint(margin) {
-  const m = margin || 40;
-  const side = irand(0, 3);
-  if (side === 0) return { x: rand(0, W), y: -m };
-  if (side === 1) return { x: W + m, y: rand(0, H) };
-  if (side === 2) return { x: rand(0, W), y: H + m };
-  return { x: -m, y: rand(0, H) };
+/* spawn point on a ring around the camera, just outside the visible view */
+function spawnRing(margin) {
+  const m = margin || 60;
+  const vh = viewHalf();
+  const r = Math.hypot(vh.hw, vh.hh) + m;
+  const a = rand(0, TAU);
+  return {
+    x: clamp(cam.x + Math.cos(a) * r, 24, CFG.world.w - 24),
+    y: clamp(cam.y + Math.sin(a) * r, 24, CFG.world.h - 24),
+  };
 }
 
 function spawnEnemy(type, x, y, elite) {
   const base = ETYPES[type];
   const t = G.time;
   const hpM = CFG.hpMul(t) * (elite ? 5 : 1);
-  const pos = (x === undefined) ? edgePoint() : { x, y };
+  const pos = (x === undefined) ? spawnRing() : { x, y };
   const e = {
     type, elite: !!elite,
     x: pos.x, y: pos.y,
@@ -449,7 +609,7 @@ function spawnEnemy(type, x, y, elite) {
   };
   G.enemies.push(e);
   if (elite) {
-    addFloat(e.x, clamp(e.y - 40, 30, H - 30), 'ELITE', COL.elite, 17);
+    addFloat(e.x, e.y - 44, 'ELITE', COL.elite, 17);
     spawnParts(e.x, e.y, COL.elite, 14, 200, 0.6, 4);
   }
   return e;
@@ -477,7 +637,7 @@ function updateSpawns(dt) {
     G.eliteT -= dt;
     if (G.eliteT <= 0 && G.enemies.length < CFG.maxEnemies - 4) {
       G.eliteT = CFG.eliteEvery;
-      const pos = edgePoint();
+      const pos = spawnRing();
       spawnEnemy(pickType(t), pos.x, pos.y, true);
       toast('ELITE SIGNATURE DETECTED');
     }
@@ -495,7 +655,7 @@ function updateSpawns(dt) {
 function spawnBoss() {
   const n = G.bossCount;
   const hp = 1100 * (1 + (n - 1) * 0.8) * (1 + G.time / 300);
-  const pos = edgePoint(90);
+  const pos = spawnRing(120);
   const b = {
     type: 'boss', boss: true,
     x: pos.x, y: pos.y, vx: 0, vy: 0,
@@ -558,7 +718,7 @@ function enemyShoot(x, y, dx, dy, spd, dmg) {
 function fireBullets(ax, ay) {
   const p = G.player;
   const n = p.proj;
-  const spread = 0.09;
+  const spread = 0.09 + (p.spreadBonus || 0);
   for (let i = 0; i < n; i++) {
     const off = (i - (n - 1) / 2) * spread + rand(-0.02, 0.02);
     const ca = Math.cos(off), sa = Math.sin(off);
@@ -568,7 +728,7 @@ function fireBullets(ax, ay) {
       vx: dx * p.bulletSpeed + p.vx * 0.35,
       vy: dy * p.bulletSpeed + p.vy * 0.35,
       dmg: p.dmg, pierce: p.pierce, r: 5, life: 0.85, t: 0,
-      critC: p.crit, hitSet: null,
+      critC: p.crit, hitSet: null, seek: p.seek,
     });
   }
   p.fireT = 1 / p.fireRate;
@@ -602,6 +762,7 @@ function killEnemy(e) {
   if (e.boss) {
     for (let i = 0; i < 8; i++) dropShard(e.x, e.y, 5);
     dropHeal(e.x, e.y, 40);
+    dropNuke(e.x, e.y);
     G.hitstop = 0.35;
     G.boss = null;
     el.bossbar.classList.add('hidden');
@@ -610,6 +771,7 @@ function killEnemy(e) {
   } else if (e.elite) {
     for (let i = 0; i < 5; i++) dropShard(e.x, e.y, e.xp / 5);
     if (Math.random() < 0.35) dropHeal(e.x, e.y, 25);
+    if (Math.random() < 0.22) dropNuke(e.x, e.y);
     G.hitstop = 0.12;
     addFloat(e.x, e.y - 30, '+' + e.score, COL.elite, 17);
   } else {
@@ -624,7 +786,16 @@ function killEnemy(e) {
 
 function damagePlayer(dmg, sx, sy) {
   const p = G.player;
-  if (!p.alive || p.inv > 0 || p.dashTime > 0) return;
+  if (!p.alive || p.inv > 0) return;
+  if (p.shields > 0) {
+    p.shields--;
+    p.inv = 0.6;
+    toast('🛡 AEGIS BLOCKED');
+    spawnParts(p.x, p.y, '#7df9ff', 18, 260, 0.5, 4);
+    AU.hit();
+    updateHUD();
+    return;
+  }
   p.hp -= dmg;
   p.inv = 0.8;
   addShake(0.45);
@@ -652,7 +823,7 @@ const UPOOL = [
   { id: 'swift',     ico: '👟', name: 'ION THRUSTERS', desc: '+12% move speed',        max: 99, apply(p) { p.speed *= 1.12; } },
   { id: 'vital',     ico: '❤',  name: 'REINFORCED HULL', desc: '+25 max hull, repair 40', max: 99, apply(p) { p.maxhp += 25; p.hp = Math.min(p.maxhp, p.hp + 40); } },
   { id: 'magnet',    ico: '🧲', name: 'TRACTOR FIELD', desc: '+45% pickup radius',     max: 99, apply(p) { p.magnet *= 1.45; } },
-  { id: 'phase',     ico: '💨', name: 'PHASE DASH', desc: '-18% dash cooldown',        max: 4,  apply(p) { p.dashCD *= 0.82; } },
+  { id: 'seeker',    ico: '🎯', name: 'SEEKER PROTOCOL', desc: 'Heat-seek +1 stage (max 5)', max: 5,  apply(p) { p.seek = Math.min(5, p.seek + 1); } },
   { id: 'crit',      ico: '🎯', name: 'CRITICAL MATRIX', desc: '+12% crit chance (2.2× dmg)', max: 5, apply(p) { p.crit += 0.12; } },
   { id: 'siphon',    ico: '🩸', name: 'SIPHON CORE', desc: 'Regain hull from kills',   max: 3,  apply(p) { p.siphon += 1; } },
   { id: 'repair',    ico: '🔧', name: 'FIELD REPAIR', desc: 'Restore 50 hull now',     max: 99, apply(p) { p.hp = Math.min(p.maxhp, p.hp + 50); } },
@@ -683,8 +854,9 @@ function applyUpgrade(id) {
    ============================================================ */
 const el = {};
 ['hud', 'menu', 'levelup', 'paused', 'gameover', 'cards', 'hpfill', 'hptext',
- 'hpbar', 'xpfill', 'lvltext', 'timer', 'score', 'bossbar', 'bossfill',
- 'stats', 'newbest', 'bestline', 'toast', 'warnbanner',
+ 'hpbar', 'xpfill', 'lvltext', 'nukeline', 'timer', 'score', 'bossbar', 'bossfill',
+ 'stats', 'newbest', 'bestline', 'ptsline', 'toast', 'warnbanner',
+ 'store', 'storebtn', 'storeback', 'storepts', 'storeups', 'storeitems', 'storeweapons',
  'startbtn', 'retrybtn', 'menubtn', 'resumebtn', 'quitbtn', 'pausebtn', 'mutebtn'
 ].forEach(id => { el[id] = document.getElementById(id); });
 
@@ -715,6 +887,7 @@ function updateHUD() {
   el.hpbar.classList.toggle('low', pct < 0.3);
   el.xpfill.style.width = clamp(G.xp / G.xpNeed, 0, 1) * 100 + '%';
   el.lvltext.textContent = 'LV ' + G.level;
+  el.nukeline.textContent = '☢ ×' + p.nukes + (p.shields > 0 ? '   🛡 ×' + p.shields : '');
   el.timer.textContent = fmtTime(G.time);
   el.score.textContent = Math.floor(G.score).toLocaleString('en-US');
   if (G.boss) el.bossfill.style.width = clamp(G.boss.hp / G.boss.maxhp, 0, 1) * 100 + '%';
@@ -749,6 +922,7 @@ function startGame() {
   resetGame();
   G.mode = 'playing';
   el.menu.classList.add('hidden');
+  el.store.classList.add('hidden');
   el.gameover.classList.add('hidden');
   el.paused.classList.add('hidden');
   el.levelup.classList.add('hidden');
@@ -774,11 +948,15 @@ function gameOver() {
     G.best = G.score;
     try { localStorage.setItem('neonvoid_best', String(G.best)); } catch (e) {}
   }
+  const earned = Math.floor(G.score / 25);
+  if (earned > 0) { META.pts += earned; saveMeta(); }
   el.stats.innerHTML =
     '<div><div class="sv">' + Math.floor(G.score).toLocaleString('en-US') + '</div><div class="sl">SCORE</div></div>' +
     '<div><div class="sv">' + fmtTime(G.time) + '</div><div class="sl">SURVIVED</div></div>' +
     '<div><div class="sv">' + G.kills + '</div><div class="sl">KILLS</div></div>' +
-    '<div><div class="sv">' + G.level + '</div><div class="sl">LEVEL</div></div>';
+    '<div><div class="sv">' + G.level + '</div><div class="sl">LEVEL</div></div>' +
+    '<div><div class="sv">+' + earned.toLocaleString('en-US') + '</div><div class="sl">POINTS EARNED</div></div>' +
+    '<div><div class="sv">' + WEAPONS[META.weapon].name + '</div><div class="sl">WEAPON</div></div>';
   el.newbest.classList.toggle('hidden', !isBest);
   el.bestline.textContent = G.best > 0 ? 'BEST  ' + G.best.toLocaleString('en-US') : '';
   setTimeout(() => {
@@ -799,6 +977,101 @@ function togglePause() {
   }
 }
 
+/* ============================================================
+   STORE — spend points on permanent upgrades, weapons, items
+   ============================================================ */
+function pips(lvl, max) {
+  let s = '';
+  for (let i = 0; i < max; i++) s += i < lvl ? '●' : '○';
+  return s;
+}
+function storeRow(parent, ico, name, desc, lvl, max, cost, onBuy) {
+  const row = document.createElement('div');
+  row.className = 'srow';
+  const info = document.createElement('div');
+  info.className = 'sinfo';
+  info.innerHTML =
+    '<div class="sicotx">' + ico + '</div>' +
+    '<div><div class="snm">' + name + '</div>' +
+    '<div class="sds">' + desc + '</div>' +
+    '<div class="spips">' + pips(lvl, max) + '</div></div>';
+  const btn = document.createElement('button');
+  const maxed = lvl >= max;
+  btn.className = 'sbuy' + (maxed ? ' maxed' : '');
+  btn.textContent = maxed ? 'MAX' : cost + ' ◈';
+  if (!maxed) btn.addEventListener('click', () => {
+    if (META.pts < cost) { toast('NOT ENOUGH POINTS'); AU.hit(); return; }
+    onBuy();
+    saveMeta(); AU.click();
+    renderStore(); refreshMenuPts();
+  });
+  row.appendChild(info);
+  row.appendChild(btn);
+  parent.appendChild(row);
+}
+function renderStore() {
+  el.storepts.textContent = '◈ ' + META.pts.toLocaleString('en-US') + ' PTS';
+  el.storeups.innerHTML = '';
+  META_UPS.forEach(u => {
+    const lvl = META.up[u.id];
+    storeRow(el.storeups, u.ico, u.name, u.desc, lvl, u.max, metaCost(u.base, lvl),
+      () => { META.pts -= metaCost(u.base, lvl); META.up[u.id]++; toast(u.ico + ' ' + u.name + ' +' + META.up[u.id]); });
+  });
+  el.storeitems.innerHTML = '';
+  META_ITEMS.forEach(u => {
+    const lvl = META[u.id];
+    storeRow(el.storeitems, u.ico, u.name, u.desc, lvl, u.max, metaCost(u.base, lvl),
+      () => { META.pts -= metaCost(u.base, lvl); META[u.id]++; toast(u.ico + ' ' + u.name); });
+  });
+  el.storeweapons.innerHTML = '';
+  Object.keys(WEAPONS).forEach(id => {
+    const w = WEAPONS[id];
+    const owned = META.weapons[id];
+    const equipped = META.weapon === id;
+    const row = document.createElement('div');
+    row.className = 'srow' + (equipped ? ' equipped' : '');
+    const info = document.createElement('div');
+    info.className = 'sinfo';
+    info.innerHTML =
+      '<div class="sicotx">' + w.ico + '</div>' +
+      '<div><div class="snm">' + w.name + '</div>' +
+      '<div class="sds">' + w.desc + '</div></div>';
+    const btn = document.createElement('button');
+    btn.className = 'sbuy' + (equipped ? ' maxed' : '');
+    btn.textContent = equipped ? 'EQUIPPED' : owned ? 'EQUIP' : w.cost + ' ◈';
+    btn.addEventListener('click', () => {
+      if (!owned) {
+        if (META.pts < w.cost) { toast('NOT ENOUGH POINTS'); AU.hit(); return; }
+        META.pts -= w.cost;
+        META.weapons[id] = true;
+        toast(w.ico + ' ' + w.name + ' UNLOCKED');
+      }
+      META.weapon = id;
+      saveMeta(); AU.click();
+      renderStore(); refreshMenuPts();
+    });
+    row.appendChild(info);
+    row.appendChild(btn);
+    el.storeweapons.appendChild(row);
+  });
+}
+function refreshMenuPts() {
+  el.ptsline.textContent = '◈ ' + META.pts.toLocaleString('en-US') + ' PTS';
+  el.bestline.textContent = G.best > 0 ? 'BEST  ' + G.best.toLocaleString('en-US') : '';
+}
+function openStore() {
+  AU.init(); AU.click();
+  renderStore();
+  el.menu.classList.add('hidden');
+  el.store.classList.remove('hidden');
+}
+function closeStore() {
+  AU.click();
+  el.store.classList.add('hidden');
+  el.menu.classList.remove('hidden');
+  refreshMenuPts();
+}
+
 el.startbtn.addEventListener('click', startGame);
 el.retrybtn.addEventListener('click', startGame);
 el.menubtn.addEventListener('click', () => {
@@ -807,8 +1080,10 @@ el.menubtn.addEventListener('click', () => {
   el.gameover.classList.add('hidden');
   el.hud.classList.add('hidden');
   el.menu.classList.remove('hidden');
-  el.bestline.textContent = G.best > 0 ? 'BEST  ' + G.best.toLocaleString('en-US') : '';
+  refreshMenuPts();
 });
+el.storebtn.addEventListener('click', openStore);
+el.storeback.addEventListener('click', closeStore);
 el.resumebtn.addEventListener('click', togglePause);
 el.quitbtn.addEventListener('click', () => {
   AU.click();
@@ -816,6 +1091,7 @@ el.quitbtn.addEventListener('click', () => {
   el.paused.classList.add('hidden');
   el.hud.classList.add('hidden');
   el.menu.classList.remove('hidden');
+  refreshMenuPts();
 });
 el.pausebtn.addEventListener('click', () => { if (G.mode === 'playing' || G.mode === 'paused') togglePause(); });
 el.mutebtn.addEventListener('click', () => {
@@ -834,32 +1110,17 @@ document.addEventListener('visibilitychange', () => {
    ============================================================ */
 function updatePlayer(dt, inp) {
   const p = G.player;
-  // dash trigger
-  p.dashT -= dt;
-  if ((IN.dashQueued || (G.demo && p.dashT <= 0 && G.time % 4 < dt)) && p.dashT <= 0 && p.alive) {
-    const dx = inp.mx || p.faceX, dy = inp.my || p.faceY;
-    const d = Math.hypot(dx, dy) || 1;
-    p.dashDX = dx / d; p.dashDY = dy / d;
-    p.dashTime = 0.18;
-    p.dashT = p.dashCD;
-    p.inv = Math.max(p.inv, 0.28);
-    AU.dash();
-    spawnParts(p.x, p.y, COL.player, 12, 300, 0.4, 4);
-  }
-  IN.dashQueued = false;
+  // nuke trigger (panic button)
+  if (IN.nukeQueued && p.nukes > 0 && p.alive) fireNuke();
+  if (G.demo && p.nukes > 0 && p.alive && p.hp < p.maxhp * 0.3) fireNuke();
+  IN.nukeQueued = false;
 
-  if (p.dashTime > 0) {
-    p.dashTime -= dt;
-    p.vx = p.dashDX * 880; p.vy = p.dashDY * 880;
-    if (Math.random() < 0.8) spawnParts(p.x, p.y, COL.player, 2, 60, 0.3, 4);
-  } else {
-    const tx = inp.mx * p.speed, ty = inp.my * p.speed;
-    const k = 1 - Math.exp(-12 * dt);
-    p.vx = lerp(p.vx, tx, k);
-    p.vy = lerp(p.vy, ty, k);
-  }
-  p.x = clamp(p.x + p.vx * dt, p.r, W - p.r);
-  p.y = clamp(p.y + p.vy * dt, p.r, H - p.r);
+  const tx = inp.mx * p.speed, ty = inp.my * p.speed;
+  const k = 1 - Math.exp(-12 * dt);
+  p.vx = lerp(p.vx, tx, k);
+  p.vy = lerp(p.vy, ty, k);
+  p.x = clamp(p.x + p.vx * dt, p.r, CFG.world.w - p.r);
+  p.y = clamp(p.y + p.vy * dt, p.r, CFG.world.h - p.r);
   p.inv = Math.max(0, p.inv - dt);
 
   // facing / firing
@@ -883,8 +1144,32 @@ function updateBullets(dt) {
   for (let i = G.bullets.length - 1; i >= 0; i--) {
     const b = G.bullets[i];
     b.life -= dt; b.t += dt;
-    if (b.life <= 0 || b.x < -30 || b.x > W + 30 || b.y < -30 || b.y > H + 30) {
+    if (b.life <= 0 || b.x < -40 || b.x > CFG.world.w + 40 || b.y < -40 || b.y > CFG.world.h + 40) {
       G.bullets.splice(i, 1); continue;
+    }
+    // heat-seeking: steer toward the nearest enemy roughly ahead of the bullet
+    if (b.seek > 0 && G.enemies.length) {
+      const TURN = [0, 1.4, 3.0, 6.0, 12.0, 60.0][Math.min(5, b.seek)] || 0;
+      const spd = Math.hypot(b.vx, b.vy) || 1;
+      const fx = b.vx / spd, fy = b.vy / spd;
+      let best = null, bd = 520 * 520;
+      for (const e of G.enemies) {
+        const ex = e.x - b.x, ey = e.y - b.y;
+        const d2 = ex * ex + ey * ey;
+        if (d2 > bd || d2 < 1) continue;
+        const dot = (ex * fx + ey * fy) / Math.sqrt(d2);
+        if (dot < 0.35) continue; // must be roughly ahead
+        bd = d2; best = e;
+      }
+      if (best && TURN > 0) {
+        const want = Math.atan2(best.y - b.y, best.x - b.x);
+        const cur = Math.atan2(b.vy, b.vx);
+        let da = want - cur;
+        while (da > Math.PI) da -= TAU;
+        while (da < -Math.PI) da += TAU;
+        const na = cur + clamp(da, -TURN * dt, TURN * dt);
+        b.vx = Math.cos(na) * spd; b.vy = Math.sin(na) * spd;
+      }
     }
     b.x += b.vx * dt; b.y += b.vy * dt;
     // vs enemies
@@ -1000,7 +1285,7 @@ function updateEBullets(dt) {
   for (let i = G.ebullets.length - 1; i >= 0; i--) {
     const b = G.ebullets[i];
     b.life -= dt; b.t += dt;
-    if (b.life <= 0 || b.x < -40 || b.x > W + 40 || b.y < -40 || b.y > H + 40) {
+    if (b.life <= 0 || b.x < -40 || b.x > CFG.world.w + 40 || b.y < -40 || b.y > CFG.world.h + 40) {
       G.ebullets.splice(i, 1); continue;
     }
     b.x += b.vx * dt; b.y += b.vy * dt;
@@ -1090,34 +1375,60 @@ function drawDiamond(x, y, r, rot, color, fill) {
 }
 
 function draw() {
+  updateCamera();
   ctx.fillStyle = COL.bg;
   ctx.fillRect(0, 0, W, H);
   ctx.save();
-  // screen shake
+  // camera + screen shake (shake applied in screen space)
+  let shx = 0, shy = 0;
   if (G.trauma > 0) {
     const s = G.trauma * G.trauma * 16;
-    ctx.translate(rand(-s, s), rand(-s, s));
+    shx = rand(-s, s); shy = rand(-s, s);
   }
+  ctx.translate(W / 2 + shx, H / 2 + shy);
+  ctx.scale(cam.zoom, cam.zoom);
+  ctx.translate(-cam.x, -cam.y);
 
-  // grid
+  // grid (world space, visible region only)
+  const vh = viewHalf();
+  const x0 = cam.x - vh.hw - 40, x1 = cam.x + vh.hw + 40;
+  const y0 = cam.y - vh.hh - 40, y1 = cam.y + vh.hh + 40;
   ctx.strokeStyle = 'rgba(90,140,255,0.07)';
   ctx.lineWidth = 1;
   ctx.beginPath();
   const gs = 64;
-  for (let x = (W / 2) % gs; x < W; x += gs) { ctx.moveTo(x, 0); ctx.lineTo(x, H); }
-  for (let y = (H / 2) % gs; y < H; y += gs) { ctx.moveTo(0, y); ctx.lineTo(W, y); }
+  for (let x = Math.max(0, Math.floor(x0 / gs) * gs); x <= Math.min(CFG.world.w, x1); x += gs) {
+    ctx.moveTo(x, Math.max(0, y0)); ctx.lineTo(x, Math.min(CFG.world.h, y1));
+  }
+  for (let y = Math.max(0, Math.floor(y0 / gs) * gs); y <= Math.min(CFG.world.h, y1); y += gs) {
+    ctx.moveTo(Math.max(0, x0), y); ctx.lineTo(Math.min(CFG.world.w, x1), y);
+  }
   ctx.stroke();
 
-  // arena border
+  // arena border (world bounds)
   ctx.strokeStyle = 'rgba(70,246,255,0.35)';
-  ctx.lineWidth = 2;
-  ctx.strokeRect(3, 3, W - 6, H - 6);
+  ctx.lineWidth = 3;
+  ctx.strokeRect(2, 2, CFG.world.w - 4, CFG.world.h - 4);
 
   // pickups
   const tt = performance.now() / 1000;
   for (const k of G.pickups) {
     const pulse = 1 + Math.sin(tt * 6 + k.x) * 0.15;
     if (k.kind === 'xp') drawDiamond(k.x, k.y, k.r * pulse, tt * 2, COL.xp, true);
+    else if (k.kind === 'nuke') {
+      ctx.save();
+      ctx.translate(k.x, k.y);
+      ctx.strokeStyle = '#ffd76a';
+      ctx.globalAlpha = 0.9; ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.arc(0, 0, 15 * pulse, 0, TAU); ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.font = '700 20px sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.shadowColor = '#ffd76a'; ctx.shadowBlur = 10;
+      ctx.fillStyle = '#ffd76a';
+      ctx.fillText('☢', 0, 1);
+      ctx.restore();
+    }
     else {
       ctx.save();
       ctx.translate(k.x, k.y);
@@ -1207,13 +1518,15 @@ function draw() {
     ctx.beginPath(); ctx.arc(p.r * 0.25, 0, p.r * 0.22, 0, TAU); ctx.fill();
     ctx.restore();
     ctx.globalAlpha = 1;
-    // dash cooldown ring
-    if (p.dashT > 0) {
-      ctx.strokeStyle = 'rgba(70,246,255,0.4)';
+    // aegis shield rings
+    if (p.shields > 0) {
+      ctx.strokeStyle = 'rgba(125,249,255,0.7)';
       ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, p.r + 8, -Math.PI / 2, -Math.PI / 2 + TAU * (1 - p.dashT / p.dashCD));
-      ctx.stroke();
+      for (let i = 0; i < p.shields; i++) {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.r + 8 + i * 6, 0, TAU);
+        ctx.stroke();
+      }
     }
   }
 
@@ -1260,24 +1573,45 @@ function draw() {
   }
   ctx.globalAlpha = 1;
 
-  // touch controls (only while playing, on touch devices)
+  // nuke shockwaves (world space)
+  for (const s of G.shocks) {
+    const a = clamp(s.life / s.maxLife, 0, 1);
+    ctx.globalAlpha = a * 0.85;
+    ctx.strokeStyle = '#ffd76a';
+    ctx.lineWidth = 12 * a + 2;
+    ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, TAU); ctx.stroke();
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(s.x, s.y, s.r * 0.93, 0, TAU); ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
+  ctx.restore();
+
+  // nuke flash (screen space)
+  if (G.flash > 0) {
+    ctx.fillStyle = 'rgba(255,250,235,' + (G.flash * 0.8).toFixed(3) + ')';
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  // vignette
+  if (vigGrad) { ctx.fillStyle = vigGrad; ctx.fillRect(0, 0, W, H); }
+
+  // touch controls — screen space (only while playing, on touch devices)
   if (G.mode === 'playing' && (IN.mActive || IN.aActive || 'ontouchstart' in window)) {
-    // dash button
-    const bx = IN.dashBX, by = IN.dashBY, br = 46;
+    // nuke button
+    const bx = IN.nukeBX, by = IN.nukeBY, br = 46;
     const p2 = G.player;
-    const ready = p2.dashT <= 0;
-    ctx.globalAlpha = ready ? 0.9 : 0.35;
+    const armed = p2.nukes > 0;
+    ctx.globalAlpha = armed ? 0.92 : 0.3;
     ctx.beginPath(); ctx.arc(bx, by, br, 0, TAU);
-    ctx.strokeStyle = COL.player; ctx.lineWidth = 3; ctx.stroke();
-    if (!ready) {
-      ctx.strokeStyle = COL.player; ctx.lineWidth = 5;
-      ctx.beginPath();
-      ctx.arc(bx, by, br, -Math.PI / 2, -Math.PI / 2 + TAU * (1 - p2.dashT / p2.dashCD));
-      ctx.stroke();
-    }
-    ctx.fillStyle = COL.player;
-    ctx.font = '700 13px sans-serif'; ctx.textAlign = 'center';
-    ctx.fillText('DASH', bx, by + 5);
+    ctx.strokeStyle = '#ffd76a'; ctx.lineWidth = 3; ctx.stroke();
+    ctx.fillStyle = '#ffd76a';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = '700 22px sans-serif';
+    ctx.fillText('☢', bx, by - 9);
+    ctx.font = '700 13px sans-serif';
+    ctx.fillText('×' + p2.nukes, bx, by + 13);
     ctx.globalAlpha = 1;
     // sticks
     const drawStick = (ox, oy, dx, dy, col) => {
@@ -1292,11 +1626,6 @@ function draw() {
     if (IN.mActive) drawStick(IN.mOX, IN.mOY, IN.mX, IN.mY, COL.player);
     if (IN.aActive) drawStick(IN.aOX, IN.aOY, IN.aX, IN.aY, '#ff9e57');
   }
-
-  ctx.restore();
-
-  // vignette
-  if (vigGrad) { ctx.fillStyle = vigGrad; ctx.fillRect(0, 0, W, H); }
 
   // low-hp pulse
   if (G.mode === 'playing' && p && p.hp / p.maxhp < 0.32 && p.alive) {
@@ -1350,11 +1679,11 @@ function frame(now) {
    BOOT
    ============================================================ */
 resize();
-el.bestline.textContent = G.best > 0 ? 'BEST  ' + G.best.toLocaleString('en-US') : '';
+refreshMenuPts();
 window.addEventListener('blur', () => { IN.keys = {}; });
 
 // headless test hook
-window.__NV = { G, CFG, IN, startGame, spawnEnemy, gainXP, damagePlayer, damageEnemy, rollUpgrades, applyUpgrade, update, draw, updateHUD, ETYPES };
+window.__NV = { G, CFG, IN, META, WEAPONS, startGame, spawnEnemy, gainXP, damagePlayer, damageEnemy, rollUpgrades, applyUpgrade, fireNuke, update, draw, updateHUD, updateCamera, ETYPES };
 
 if (window.location.hash.indexOf('autodemo') >= 0) {
   G.demo = true;
