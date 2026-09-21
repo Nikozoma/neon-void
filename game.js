@@ -14,7 +14,7 @@ const dist2 = (ax, ay, bx, by) => { const dx = ax - bx, dy = ay - by; return dx 
 const pick = (arr) => arr[(Math.random() * arr.length) | 0];
 
 /* single source of truth for the game version — shown on the menu badge */
-const GAME_VERSION = '2.7';
+const GAME_VERSION = '2.8';
 
 /* ---------------- config ---------------- */
 const CFG = {
@@ -542,6 +542,7 @@ function resetGame() {
   G.flash = 0;
   G.spawnT = 1.2; G.eliteT = CFG.firstElite; G.bossT = CFG.firstBoss;
   G.boss = null; G.bossCount = 0; G.upgrades = {};
+  G.devGod = false; G.devNoSpawn = false; // live-ops toggles always reset on a fresh run
   IN.nukeQueued = false;
   // ---- storyline state ----
   G.story = {
@@ -552,6 +553,7 @@ function resetGame() {
     ruptureT: 0, spawnHold: 0, bossT: 0, doneT: -1,
     warned: false, warAnnounced: false,
     fitZoom: CFG.camZoom,
+    spawnMode: 'story', // voidwar spawning: 'story' (from voids) | 'classic' (normal ring spawns)
   };
   if (STORY.on) {
     const st = G.story;
@@ -796,18 +798,21 @@ function pickType(t) {
 }
 
 function updateSpawns(dt) {
+  if (G.devNoSpawn) return; // live-ops: freeze all spawning
   const t = G.time;
   const st = G.story;
   const inStory = !!st && st.phase !== 'off';
   const calm = inStory && st.phase === 'calm';
   const voidwar = inStory && st.phase === 'voidwar';
+  // live-ops spawn-mode toggle: test classic ring spawns inside the void war
+  const classicSpawns = !inStory || (voidwar && st.spawnMode === 'classic');
   const held = !!st && st.spawnHold > 0;
   if (held) st.spawnHold -= dt;
   G.spawnT -= dt;
   if (G.spawnT <= 0 && G.enemies.length < CFG.maxEnemies && !held) {
     G.spawnT = CFG.spawnInterval(t);
     const batch = Math.min(CFG.batchSize(t), CFG.maxEnemies - G.enemies.length);
-    const openVoids = voidwar ? st.voids.filter(v => !v.sealed && v.open > 0.5) : null;
+    const openVoids = (voidwar && !classicSpawns) ? st.voids.filter(v => !v.sealed && v.open > 0.5) : null;
     for (let i = 0; i < batch; i++) {
       // calm phase: beginner types only (mites + dashers)
       const type = calm ? (Math.random() < 0.7 ? 'mite' : 'dasher') : pickType(t);
@@ -824,7 +829,7 @@ function updateSpawns(dt) {
     G.eliteT -= dt;
     if (G.eliteT <= 0 && G.enemies.length < CFG.maxEnemies - 4) {
       G.eliteT = CFG.eliteEvery;
-      const open = voidwar ? st.voids.filter(v => !v.sealed && v.open > 0.5) : [];
+      const open = (voidwar && !classicSpawns) ? st.voids.filter(v => !v.sealed && v.open > 0.5) : [];
       if (open.length) {
         const pos = voidSpawnPos(open);
         spawnEnemy(pickType(t), pos.x, pos.y, true, true);
@@ -1003,7 +1008,7 @@ function killEnemy(e) {
 
 function damagePlayer(dmg, sx, sy) {
   const p = G.player;
-  if (!p.alive || p.inv > 0) return;
+  if (!p.alive || p.inv > 0 || G.devGod) return;
   if (p.shields > 0) {
     p.shields--;
     p.inv = 0.6;
@@ -1078,6 +1083,8 @@ const el = {};
  'store', 'storebtn', 'storeback', 'storepts', 'storeups', 'storeitems', 'storeweapons',
  'startbtn', 'retrybtn', 'menubtn', 'resumebtn', 'quitbtn', 'pausebtn', 'mutebtn',
  'devlogo', 'devbtn', 'devmenu', 'devbody', 'devrestart', 'devreset', 'devback',
+ 'devhub', 'hubrun', 'hublive', 'hubstore', 'hubclose',
+ 'liveops', 'liveopsbody', 'liveopsback',
 'devhelpbtn', 'shopdevhelpbtn', 'helpop', 'helptitle', 'helpbody', 'helpcur', 'helpclose',
 'pdevbtn',
  'shopdevbtn', 'shopdev', 'shopdevbody', 'shopdevback', 'shopdevreset',
@@ -1379,24 +1386,195 @@ function unlockDev() {
   try { localStorage.setItem(DEV_KEY, '1'); } catch (e) {}
 }
 
-let devReturn = 'menu'; // where to go when the dev console closes
-function openDev(from) {
+let devOrigin = 'menu'; // menu | pause | store — where the dev hub returns to
+function openDevHub(origin) {
   AU.click();
-  devReturn = from || 'menu';
-  renderDev();
+  devOrigin = origin || 'menu';
   el.menu.classList.add('hidden');
   el.paused.classList.add('hidden');
-  el.devmenu.classList.remove('hidden');
+  el.store.classList.add('hidden');
+  el.devhub.classList.remove('hidden');
 }
-function closeDev() {
+function closeDevHub() {
   AU.click();
-  el.devmenu.classList.add('hidden');
-  if (devReturn === 'pause' && G.mode === 'paused') {
+  el.devhub.classList.add('hidden');
+  if (devOrigin === 'pause' && G.mode === 'paused') {
     el.paused.classList.remove('hidden');
+  } else if (devOrigin === 'store') {
+    el.store.classList.remove('hidden');
+    renderStore(); // prices may have changed
+    refreshMenuPts();
   } else {
     el.menu.classList.remove('hidden');
     refreshMenuPts();
   }
+}
+/* back from any dev category to the hub */
+function backToHub() {
+  AU.click();
+  el.devmenu.classList.add('hidden');
+  el.liveops.classList.add('hidden');
+  el.shopdev.classList.add('hidden');
+  el.devhub.classList.remove('hidden');
+  if (devOrigin !== 'menu') refreshMenuPts();
+}
+/* category entrances — every dev button goes through the hub first */
+function openDev() {
+  AU.click();
+  renderDev();
+  el.devhub.classList.add('hidden');
+  el.devmenu.classList.remove('hidden');
+}
+function openLiveOps() {
+  AU.click();
+  renderLiveOps();
+  el.devhub.classList.add('hidden');
+  el.liveops.classList.remove('hidden');
+}
+function openShopDev() {
+  AU.click();
+  renderShopDev();
+  el.devhub.classList.add('hidden');
+  el.shopdev.classList.remove('hidden');
+}
+
+/* ============================================================
+   LIVE OPS — in-run dev tools: cheats, skips, live state.
+   Everything here applies immediately to the current run.
+   ============================================================ */
+function liveRunActive() {
+  // levelup counts: the modal sits on top but the run is still live
+  return !!G.player && (G.mode === 'playing' || G.mode === 'paused' || G.mode === 'levelup');
+}
+function liveStory() {
+  const st = G.story;
+  return (st && st.phase !== 'off') ? st : null;
+}
+function liveSkipVoids() {
+  const st = liveStory();
+  if (!st) return toast('STORYLINE IS OFF');
+  if (st.phase === 'complete') return toast('STORY ALREADY COMPLETE');
+  if (st.phase === 'voidwar') return toast('VOIDS ALREADY OPEN');
+  if (st.phase === 'calm') startRupture();
+  st.ruptureT = 3; st.spawnHold = 0; // skip the expansion cinematics
+  toast('SKIPPED: VOIDS OPEN');
+}
+function liveSkipToBoss(n) {
+  const st = liveStory();
+  if (!st) return toast('STORYLINE IS OFF');
+  if (st.phase === 'complete') return toast('STORY ALREADY COMPLETE');
+  if (st.phase === 'calm') startRupture();
+  st.ruptureT = 3; st.spawnHold = 0;
+  if (G.boss) { // clear the current boss silently — no seal, no rewards
+    const i = G.enemies.indexOf(G.boss);
+    if (i >= 0) G.enemies.splice(i, 1);
+    G.boss = null;
+    el.bossbar.classList.add('hidden');
+  }
+  // seal earlier voids so the counter stays consistent
+  let sealed = 0;
+  for (const v of st.voids) {
+    if (sealed >= n - 1) break;
+    if (!v.sealed) { sealVoid(v); sealed++; }
+  }
+  st.bossesDown = sealed;
+  st.bossT = 0.05;
+  toast('SKIPPED: BOSS ' + n + ' OF ' + STORY.bossesToClose);
+}
+function liveSealAll() {
+  const st = liveStory();
+  if (!st || st.phase !== 'voidwar') return toast('NO OPEN VOID WAR');
+  completeStory();
+}
+function liveToggleSpawnMode() {
+  const st = liveStory();
+  if (!st) return toast('STORYLINE IS OFF');
+  st.spawnMode = st.spawnMode === 'classic' ? 'story' : 'classic';
+  toast(st.spawnMode === 'classic' ? 'SPAWN MODE: CLASSIC' : 'SPAWN MODE: STORYLINE');
+}
+function liveSpawnBoss() {
+  if (G.boss) return toast('BOSS ALREADY OUT');
+  const st = liveStory();
+  if (st && st.phase === 'voidwar') { st.bossT = 0.05; toast('WARDEN INCOMING'); }
+  else { G.bossCount++; spawnBoss(); }
+}
+function liveSpawnElite() {
+  const pos = spawnRing();
+  spawnEnemy(pickType(G.time), pos.x, pos.y, true);
+  toast('ELITE SPAWNED');
+}
+function liveKillAll() {
+  for (const e of [...G.enemies]) killEnemy(e);
+  toast('FIELD CLEARED');
+}
+function liveLevel() { gainXP(G.xpNeed + 1); toast('+1 LEVEL'); }
+function liveRefillHP() { const p = G.player; p.hp = p.maxhp; updateHUD(); toast('HP REFILLED'); }
+function liveRefillNukes() { G.player.nukes = SHOP.nukeCap; updateHUD(); toast('NUKES REFILLED'); }
+function liveAddPts() { META.pts += 1000; saveMeta(); refreshMenuPts(); toast('+1000 PTS'); }
+function liveSkipTime() { G.time += 60; updateHUD(); toast('+60s'); }
+function liveRestart() {
+  el.liveops.classList.add('hidden');
+  el.devhub.classList.add('hidden');
+  startGame();
+}
+
+function liveBtn(parent, label, fn) {
+  const b = document.createElement('button');
+  b.className = 'livebtn';
+  b.textContent = label;
+  b.addEventListener('click', () => { AU.click(); fn(); renderLiveOps(); });
+  parent.appendChild(b);
+  return b;
+}
+function renderLiveOps() {
+  const b = el.liveopsbody;
+  b.innerHTML = '';
+  if (!liveRunActive()) {
+    const p = document.createElement('p');
+    p.className = 'tag';
+    p.textContent = 'NO ACTIVE RUN — START A RUN, THEN OPEN THIS FROM THE PAUSE MENU';
+    b.appendChild(p);
+    return;
+  }
+  const st = liveStory();
+  // ---- story skip ----
+  b.appendChild(devSection('STORY SKIP'));
+  let g = devGrid();
+  b.appendChild(g);
+  if (st) {
+    liveBtn(g, '⏩ VOIDS OPEN', liveSkipVoids);
+    for (let i = 1; i <= STORY.bossesToClose; i++) liveBtn(g, '⏩ BOSS ' + i, () => liveSkipToBoss(i));
+    liveBtn(g, '⏩ SEAL ALL VOIDS', liveSealAll);
+  } else {
+    const p = document.createElement('p');
+    p.className = 'tag';
+    p.textContent = 'STORYLINE IS OFF — ENABLE IT IN RUN CONFIG';
+    g.appendChild(p);
+  }
+  // ---- spawning ----
+  b.appendChild(devSection('SPAWNING'));
+  g = devGrid();
+  b.appendChild(g);
+  liveBtn(g, 'SPAWN MODE: ' + (st ? st.spawnMode.toUpperCase() : 'N/A'), liveToggleSpawnMode);
+  liveBtn(g, 'FREEZE SPAWNS: ' + (G.devNoSpawn ? 'ON' : 'OFF'), () => { G.devNoSpawn = !G.devNoSpawn; });
+  liveBtn(g, 'SPAWN WARDEN NOW', liveSpawnBoss);
+  liveBtn(g, 'SPAWN ELITE NOW', liveSpawnElite);
+  liveBtn(g, 'KILL ALL ENEMIES', liveKillAll);
+  // ---- player ----
+  b.appendChild(devSection('PLAYER'));
+  g = devGrid();
+  b.appendChild(g);
+  liveBtn(g, 'GOD MODE: ' + (G.devGod ? 'ON' : 'OFF'), () => { G.devGod = !G.devGod; });
+  liveBtn(g, 'REFILL HP', liveRefillHP);
+  liveBtn(g, 'REFILL NUKES', liveRefillNukes);
+  liveBtn(g, '+1 LEVEL', liveLevel);
+  // ---- run ----
+  b.appendChild(devSection('RUN'));
+  g = devGrid();
+  b.appendChild(g);
+  liveBtn(g, '+60s TIME', liveSkipTime);
+  liveBtn(g, '+1000 PTS', liveAddPts);
+  liveBtn(g, '⟳ RESTART RUN', liveRestart);
 }
 
 function devNum(label, get, set, step, min, max, dec, help) {
@@ -1617,16 +1795,6 @@ function renderDev() {
   num(g, 'Void boss first (s)', STORY, 'voidBossFirst', 5, 5, 300, 0, 'story_bossfirst');
   num(g, 'Void boss every (s)', STORY, 'voidBossEvery', 5, 10, 600, 0, 'story_bossevery');
   num(g, 'Rupture hold (s)', STORY, 'ruptureHold', 1, 0, 30, 0, 'story_hold');
-  const rbtn = document.createElement('button');
-  rbtn.className = 'ghostbtn';
-  rbtn.textContent = '⏩ TRIGGER RUPTURE NOW';
-  rbtn.style.marginTop = '6px';
-  rbtn.addEventListener('click', () => {
-    if (G.story && G.story.phase === 'calm') { startRupture(); toast('RUPTURE TRIGGERED'); }
-    else toast('NO CALM PHASE ACTIVE');
-    AU.click();
-  });
-  b.appendChild(rbtn);
 
   // ---- points ----
   b.appendChild(devSection('POINTS · applies immediately'));
@@ -1699,19 +1867,6 @@ function devShopTap() {
 function unlockShopDev() {
   el.shopdevbtn.classList.remove('hidden');
   try { localStorage.setItem(SHOPDEV_KEY, '1'); } catch (e) {}
-}
-function openShopDev() {
-  AU.click();
-  renderShopDev();
-  el.store.classList.add('hidden');
-  el.shopdev.classList.remove('hidden');
-}
-function closeShopDev() {
-  AU.click();
-  el.shopdev.classList.add('hidden');
-  el.store.classList.remove('hidden');
-  renderStore(); // prices may have changed
-  refreshMenuPts();
 }
 function renderShopDev() {
   const b = el.shopdevbody;
@@ -1802,12 +1957,12 @@ el.menubtn.addEventListener('click', () => {
 el.storebtn.addEventListener('click', openStore);
 el.storeback.addEventListener('click', closeStore);
 el.devlogo.addEventListener('click', devLogoTap);
-el.devbtn.addEventListener('click', () => openDev('menu'));
-el.pdevbtn.addEventListener('click', () => openDev('pause'));
+el.devbtn.addEventListener('click', () => openDevHub('menu'));
+el.pdevbtn.addEventListener('click', () => openDevHub('pause'));
 el.devhelpbtn.addEventListener('click', () => setHelp(!HELP_ON));
 el.shopdevhelpbtn.addEventListener('click', () => setHelp(!HELP_ON));
 el.helpclose.addEventListener('click', closeHelp);
-el.devback.addEventListener('click', closeDev);
+el.devback.addEventListener('click', backToHub);
 el.devreset.addEventListener('click', devResetAll);
 el.devrestart.addEventListener('click', () => {
   AU.click();
@@ -1815,8 +1970,18 @@ el.devrestart.addEventListener('click', () => {
   startGame();
 });
 el.storepts.addEventListener('click', devShopTap);
-el.shopdevbtn.addEventListener('click', openShopDev);
-el.shopdevback.addEventListener('click', closeShopDev);
+el.shopdevbtn.addEventListener('click', () => openDevHub('store'));
+el.shopdevback.addEventListener('click', backToHub);
+el.hubrun.addEventListener('click', openDev);
+el.hublive.addEventListener('click', openLiveOps);
+el.hubstore.addEventListener('click', () => {
+  try {
+    if (localStorage.getItem(SHOPDEV_KEY) === '1') openShopDev();
+    else { toast('UNLOCK IN VOID MARKET: TAP ◈ PTS 7×'); AU.click(); }
+  } catch (e) { toast('UNLOCK IN VOID MARKET FIRST'); }
+});
+el.hubclose.addEventListener('click', closeDevHub);
+el.liveopsback.addEventListener('click', backToHub);
 el.shopdevreset.addEventListener('click', shopDevReset);
 el.devlogo.textContent = '◈ v' + GAME_VERSION; // the badge is the real version
 try {
@@ -3041,7 +3206,7 @@ if (window.visualViewport) {
 }
 
 // headless test hook
-window.__NV = { G, CFG, IN, META, WEAPONS, STORY, BADGES, startGame, spawnEnemy, gainXP, damagePlayer, damageEnemy, rollUpgrades, applyUpgrade, fireNuke, update, draw, updateHUD, updateCamera, ETYPES, PBASE, SHOP, META_UPS, META_ITEMS, GAME_VERSION, devLogoTap, unlockDev, renderDev, devResetAll, openDev, devShopTap, unlockShopDev, renderShopDev, shopDevReset, openShopDev, wmod, setHelp, openHelp, closeHelp, startRupture, storySpawnBoss, continueStory, showStoryDone };
+window.__NV = { G, CFG, IN, META, WEAPONS, STORY, BADGES, startGame, spawnEnemy, gainXP, damagePlayer, damageEnemy, rollUpgrades, applyUpgrade, fireNuke, update, draw, updateHUD, updateCamera, ETYPES, PBASE, SHOP, META_UPS, META_ITEMS, GAME_VERSION, devLogoTap, unlockDev, renderDev, devResetAll, openDev, openDevHub, closeDevHub, backToHub, openLiveOps, renderLiveOps, liveSkipVoids, liveSkipToBoss, liveSealAll, liveToggleSpawnMode, liveSpawnBoss, liveSpawnElite, liveKillAll, liveLevel, liveRefillHP, liveRefillNukes, liveAddPts, liveSkipTime, devShopTap, unlockShopDev, renderShopDev, shopDevReset, openShopDev, wmod, setHelp, openHelp, closeHelp, startRupture, storySpawnBoss, continueStory, showStoryDone };
 
 if (window.location.hash.indexOf('autodemo') >= 0) {
   G.demo = true;
