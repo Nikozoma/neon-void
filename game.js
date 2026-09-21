@@ -14,7 +14,7 @@ const dist2 = (ax, ay, bx, by) => { const dx = ax - bx, dy = ay - by; return dx 
 const pick = (arr) => arr[(Math.random() * arr.length) | 0];
 
 /* single source of truth for the game version — shown on the menu badge */
-const GAME_VERSION = '2.9';
+const GAME_VERSION = '3.0';
 
 /* ---------------- config ---------------- */
 const CFG = {
@@ -402,13 +402,25 @@ const META = {
   aegis: 0,          // shield charges per run (max 3)
   wlvl: {},          // weapon id -> level (0 = not owned, 1 = base)
   weapon: 'pulse',
+  skillSlots: 0,     // extra loadout slots bought (0..6); base 5 -> max 11
+  skillPool: ['overclock', 'heavy', 'split', 'pierce', 'swift'], // chosen drops for next run
 };
+/* skill loadout economy */
+const SKILL_BASE_SLOTS = 5;
+const SKILL_SLOT_PRICES = [400, 900, 1800, 3500, 7000, 12000]; // one per extra slot, 6 total
+function skillSlotsTotal() { return SKILL_BASE_SLOTS + (META.skillSlots | 0); }
+function validSkillPool(pool) {
+  const ids = UPOOL.map(u => u.id);
+  const seen = {};
+  return (Array.isArray(pool) ? pool : []).filter(id => ids.includes(id) && !seen[id] && (seen[id] = 1));
+}
 function saveMeta() {
   try {
     localStorage.setItem('neonvoid_pts', String(META.pts));
     localStorage.setItem('neonvoid_meta', JSON.stringify({
       up: META.up, nukes: META.nukes, aegis: META.aegis,
       wlvl: META.wlvl, weapon: META.weapon,
+      skillSlots: META.skillSlots, skillPool: META.skillPool,
     }));
   } catch (e) {}
 }
@@ -476,6 +488,9 @@ try {
       META.wlvl.pulse = Math.max(1, META.wlvl.pulse);
     }
     if (m.weapon && (META.wlvl[m.weapon] | 0) > 0) META.weapon = m.weapon;
+    if (typeof m.skillSlots === 'number') META.skillSlots = Math.max(0, Math.min(6, m.skillSlots | 0));
+    // light sanitize here (UPOOL isn't defined yet at load time); full validation at run start
+    if (Array.isArray(m.skillPool)) META.skillPool = [...new Set(m.skillPool.filter(id => typeof id === 'string'))];
   }
 } catch (e) {}
 /* dev-tunable shop economy */
@@ -551,6 +566,8 @@ function resetGame() {
   G.flash = 0;
   G.spawnT = 1.2; G.eliteT = CFG.firstElite; G.bossT = CFG.firstBoss;
   G.boss = null; G.bossCount = 0; G.upgrades = {};
+  // skill loadout snapshot: only chosen drops can appear this run (0 allowed)
+  G.skillPool = validSkillPool(META.skillPool).slice(0, skillSlotsTotal());
   G.devGod = false; G.devNoSpawn = false; // live-ops toggles always reset on a fresh run
   IN.nukeQueued = false;
   // ---- storyline state ----
@@ -1078,13 +1095,20 @@ const UPOOL = [
 ];
 
 function rollUpgrades() {
-  const avail = UPOOL.filter(u => (G.upgrades[u.id] || 0) < u.max && u.id !== 'repair');
+  const inPool = (id) => (G.skillPool || []).includes(id);
+  const repairDef = UPOOL.find(u => u.id === 'repair');
+  const avail = UPOOL.filter(u => u.id !== 'repair' && inPool(u.id) && (G.upgrades[u.id] || 0) < u.max);
   const picks = [];
   const pool = avail.slice();
   while (picks.length < 3 && pool.length) {
     picks.push(pool.splice(irand(0, pool.length - 1), 1)[0]);
   }
-  while (picks.length < 3) picks.push(UPOOL.find(u => u.id === 'repair'));
+  // repair is the filler only if the player brought it
+  if (inPool('repair') && (G.upgrades.repair || 0) < repairDef.max) {
+    while (picks.length < 3) picks.push(repairDef);
+  }
+  // last resort: repeat available picks so the modal always has cards
+  while (picks.length < 3 && avail.length) picks.push(avail[irand(0, avail.length - 1)]);
   return picks;
 }
 
@@ -1112,7 +1136,8 @@ const el = {};
  'storyline', 'badgeline',
  'storydone', 'storydtitle', 'storydtag', 'storydstats', 'storycontinue', 'storymenu',
  'stats', 'newbest', 'bestline', 'ptsline', 'toast', 'warnbanner',
- 'store', 'storebtn', 'storeback', 'storepts', 'storeups', 'storeitems', 'storeweapons',
+ 'store', 'storebtn', 'storeback', 'storepts', 'storeups', 'storeitems', 'storeweapons', 'storeslots',
+ 'skills', 'skillsbtn', 'pskillsbtn', 'skillgrid', 'skillslots', 'skillstag', 'skillsback',
  'startbtn', 'retrybtn', 'menubtn', 'resumebtn', 'quitbtn', 'pausebtn', 'mutebtn',
  'devlogo', 'devbtn', 'devmenu', 'devbody', 'devrestart', 'devreset', 'devback',
  'devhub', 'hubrun', 'hublive', 'hubstore', 'hubclose',
@@ -1172,12 +1197,18 @@ function updateHUD() {
 
 function onLevelUp() {
   if (G.mode !== 'playing') return;
-  G.mode = 'levelup';
-  AU.level();
   // small breather: patch up a little hull on every level
   G.player.hp = Math.min(G.player.maxhp, G.player.hp + 20);
   spawnParts(G.player.x, G.player.y, COL.xp, 30, 320, 0.8, 5);
   const picks = rollUpgrades();
+  if (!picks.length) {
+    // empty loadout (or everything maxed): consolation hull, no modal
+    G.player.hp = Math.min(G.player.maxhp, G.player.hp + 30);
+    toast('NO SKILLS IN LOADOUT — +30 HULL');
+    return;
+  }
+  G.mode = 'levelup';
+  AU.level();
   el.cards.innerHTML = '';
   picks.forEach((u) => {
     const d = document.createElement('div');
@@ -1205,6 +1236,7 @@ function startGame() {
   el.gameover.classList.add('hidden');
   el.paused.classList.add('hidden');
   el.levelup.classList.add('hidden');
+  el.skills.classList.add('hidden');
   el.hud.classList.remove('hidden');
   el.bossbar.classList.add('hidden');
   updateHUD();
@@ -1315,6 +1347,18 @@ function renderStore() {
     storeRow(el.storeitems, u.ico, u.name, u.desc, lvl, u.max, metaCost(u.base, lvl),
       () => { META.pts -= metaCost(u.base, lvl); META[u.id]++; toast(u.ico + ' ' + u.name); }, 'item');
   });
+  el.storeslots.innerHTML = '';
+  {
+    const bought = META.skillSlots | 0;
+    const price = SKILL_SLOT_PRICES[bought] || 0;
+    storeRow(el.storeslots, '🧬', 'SKILL SLOT',
+      'Unlock +1 loadout slot (base ' + SKILL_BASE_SLOTS + '). Bring 0 to ' + skillSlotsTotal() + ' skills per run.',
+      bought, SKILL_SLOT_PRICES.length, price,
+      () => {
+        META.pts -= price; META.skillSlots++;
+        toast('🧬 LOADOUT SLOTS ' + skillSlotsTotal() + '/11');
+      }, 'slot');
+  }
   el.storeweapons.innerHTML = '';
   Object.keys(WEAPONS).forEach(id => {
     const w = WEAPONS[id];
@@ -1386,6 +1430,69 @@ function closeStore() {
   el.store.classList.add('hidden');
   el.menu.classList.remove('hidden');
   refreshMenuPts();
+}
+
+/* ============================================================
+   SKILL DROPS — help reference + pre-run loadout picker.
+   Main menu: editable (applies to the next run).
+   Pause menu: read-only reference of the current run's loadout.
+   ============================================================ */
+let skillsOrigin = 'menu'; // menu | pause
+function openSkills(origin) {
+  AU.init(); AU.click();
+  skillsOrigin = origin || 'menu';
+  el.menu.classList.add('hidden');
+  el.paused.classList.add('hidden');
+  el.skills.classList.remove('hidden');
+  renderSkills();
+}
+function closeSkills() {
+  AU.click();
+  el.skills.classList.add('hidden');
+  if (skillsOrigin === 'pause' && (G.mode === 'paused' || G.mode === 'levelup')) {
+    el.paused.classList.remove('hidden');
+  } else {
+    el.menu.classList.remove('hidden');
+    refreshMenuPts();
+  }
+}
+function renderSkills() {
+  const editable = skillsOrigin === 'menu';
+  const slots = skillSlotsTotal();
+  const active = (editable
+    ? validSkillPool(META.skillPool).slice(0, slots)
+    : (G.skillPool || []).slice());
+  el.skillstag.textContent = editable
+    ? 'all 11 in-run upgrades — tap to pick your loadout for the next run (0 to ' + slots + ')'
+    : 'reference — loadout is locked while a run is live';
+  el.skillslots.textContent = '◈ LOADOUT ' + active.length + ' / ' + slots + ' SLOTS' +
+    (slots < 11 ? ' — buy more in the VOID MARKET' : '');
+  el.skillgrid.innerHTML = '';
+  UPOOL.forEach((u) => {
+    const sel = active.includes(u.id);
+    const d = document.createElement('div');
+    d.className = 'card scard' + (sel ? ' sel' : '');
+    d.innerHTML = '<div class="tick">' + (sel ? '✓' : '') + '</div>' +
+      '<div class="ico">' + u.ico + '</div><div class="nm">' + u.name + '</div>' +
+      '<div class="ds">' + u.desc + '</div>';
+    if (editable) {
+      d.addEventListener('click', () => {
+        AU.click();
+        const pool = validSkillPool(META.skillPool).slice(0, skillSlotsTotal());
+        const i = pool.indexOf(u.id);
+        if (i >= 0) { pool.splice(i, 1); toast(u.ico + ' REMOVED'); }
+        else {
+          if (pool.length >= skillSlotsTotal()) { toast('NO FREE SLOTS — BUY MORE IN THE MARKET'); AU.hit(); return; }
+          pool.push(u.id);
+          toast(u.ico + ' ' + u.name + ' ADDED');
+        }
+        META.skillPool = pool;
+        saveMeta();
+        renderSkills();
+      });
+    }
+    el.skillgrid.appendChild(d);
+  });
 }
 
 /* ============================================================
@@ -1998,6 +2105,9 @@ el.menubtn.addEventListener('click', () => {
   refreshMenuPts();
 });
 el.storebtn.addEventListener('click', openStore);
+el.skillsbtn.addEventListener('click', () => openSkills('menu'));
+el.pskillsbtn.addEventListener('click', () => openSkills('pause'));
+el.skillsback.addEventListener('click', closeSkills);
 el.storeback.addEventListener('click', closeStore);
 el.devlogo.addEventListener('click', devLogoTap);
 el.devbtn.addEventListener('click', () => openDevHub('menu'));
@@ -3251,7 +3361,7 @@ if (window.visualViewport) {
 }
 
 // headless test hook
-window.__NV = { G, CFG, IN, META, WEAPONS, STORY, BADGES, startGame, spawnEnemy, gainXP, damagePlayer, damageEnemy, rollUpgrades, applyUpgrade, fireNuke, update, draw, updateHUD, updateCamera, ETYPES, PBASE, SHOP, META_UPS, META_ITEMS, GAME_VERSION, devLogoTap, unlockDev, renderDev, devResetAll, openDev, openDevHub, closeDevHub, backToHub, openLiveOps, renderLiveOps, liveSkipVoids, liveSkipToBoss, liveSealAll, liveToggleSpawnMode, liveSpawnBoss, liveSpawnElite, liveKillAll, liveLevel, liveRefillHP, liveRefillNukes, liveAddPts, liveSkipTime, devShopTap, unlockShopDev, renderShopDev, shopDevReset, openShopDev, wmod, setHelp, openHelp, closeHelp, startRupture, storySpawnBoss, continueStory, showStoryDone };
+window.__NV = { G, CFG, IN, META, WEAPONS, UPOOL, STORY, BADGES, startGame, spawnEnemy, gainXP, damagePlayer, damageEnemy, rollUpgrades, applyUpgrade, fireNuke, update, draw, updateHUD, updateCamera, ETYPES, PBASE, SHOP, META_UPS, META_ITEMS, GAME_VERSION, devLogoTap, unlockDev, renderDev, devResetAll, openDev, openDevHub, closeDevHub, backToHub, openLiveOps, renderLiveOps, liveSkipVoids, liveSkipToBoss, liveSealAll, liveToggleSpawnMode, liveSpawnBoss, liveSpawnElite, liveKillAll, liveLevel, liveRefillHP, liveRefillNukes, liveAddPts, liveSkipTime, devShopTap, unlockShopDev, renderShopDev, shopDevReset, openShopDev, wmod, setHelp, openHelp, closeHelp, startRupture, storySpawnBoss, continueStory, showStoryDone };
 
 if (window.location.hash.indexOf('autodemo') >= 0) {
   G.demo = true;
