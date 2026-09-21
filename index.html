@@ -51,12 +51,14 @@
         <div class="menuactions">
           <button id="startbtn" class="bigbtn">ENTER THE VOID</button>
           <button id="storebtn" class="ghostbtn">LOADOUT / STORE</button>
+          <button id="devbtn" class="ghostbtn devbtn hidden">DEVELOPER</button>
         </div>
         <div class="menustats">
           <p id="ptsline" class="pts"></p>
           <p id="bestline" class="best"></p>
         </div>
       </div>
+      <div id="devlogo">◈ v2.3</div>
     </div>
   </div>
 
@@ -72,6 +74,20 @@
       <h3 class="wpn">WEAPONS</h3>
       <div id="storeweapons"></div>
       <button id="storeback" class="bigbtn">BACK</button>
+    </div>
+  </div>
+
+  <!-- Dev console (hidden) -->
+  <div id="devmenu" class="overlay hidden">
+    <div class="panel devpanel">
+      <h2>DEV CONSOLE</h2>
+      <p class="tag">tuning lab — handle with care</p>
+      <div id="devbody"></div>
+      <div class="devactions">
+        <button id="devrestart" class="bigbtn">↻ RESTART RUN</button>
+        <button id="devreset" class="ghostbtn">RESET ALL DEFAULTS</button>
+        <button id="devback" class="ghostbtn">BACK</button>
+      </div>
     </div>
   </div>
 
