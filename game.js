@@ -166,9 +166,13 @@ function resize() {
     G.player.x = clamp(G.player.x, 30, CFG.world.w - 30);
     G.player.y = clamp(G.player.y, 30, CFG.world.h - 30);
   }
-  // nuke button anchor (bottom-right)
-  IN.nukeBX = W - Math.max(64, 84 * S + 30);
-  IN.nukeBY = H - Math.max(96, 120 * S + 40);
+  // nuke button anchor (top-right), 25% smaller than the old dash button
+  IN.nukeBX = W - 58;
+  IN.nukeBY = 104;
+  // fixed virtual-stick anchors: movement bottom-left, firing bottom-right
+  IN.moveBX = 104; IN.moveBY = H - 118;
+  IN.aimBX = W - 104; IN.aimBY = H - 118;
+  buildStars(); // rebuild menu starfield for new size
   buildStatic(); // rebuild cached vignette for new size
 }
 window.addEventListener('resize', resize);
@@ -183,6 +187,7 @@ const IN = {
   // aim stick
   aActive: false, aId: -1, aOX: 0, aOY: 0, aX: 0, aY: 0,
   nukeBX: 0, nukeBY: 0, nukeQueued: false,
+  moveBX: 0, moveBY: 0, aimBX: 0, aimBY: 0,
   keys: {},
   stickR: 60, // visual radius px (scaled at draw)
 };
@@ -197,18 +202,19 @@ canvas.addEventListener('touchstart', (e) => {
   AU.init();
   for (const t of e.changedTouches) {
     const p = touchPos(t);
-    // nuke button hit?
+    // nuke button hit? (button radius 34, generous 46px touch target)
     const ddx = p.x - IN.nukeBX, ddy = p.y - IN.nukeBY;
-    if (ddx * ddx + ddy * ddy < 52 * 52 && G.mode === 'playing') {
+    if (ddx * ddx + ddy * ddy < 46 * 46 && G.mode === 'playing') {
       IN.nukeQueued = true;
       continue;
     }
+    // fixed sticks: movement anchored bottom-left, firing bottom-right
     if (p.x < W / 2 && !IN.mActive) {
       IN.mActive = true; IN.mId = t.identifier;
-      IN.mOX = p.x; IN.mOY = p.y; IN.mX = 0; IN.mY = 0;
+      IN.mOX = IN.moveBX; IN.mOY = IN.moveBY; IN.mX = 0; IN.mY = 0;
     } else if (p.x >= W / 2 && !IN.aActive) {
       IN.aActive = true; IN.aId = t.identifier;
-      IN.aOX = p.x; IN.aOY = p.y; IN.aX = 0; IN.aY = 0;
+      IN.aOX = IN.aimBX; IN.aOY = IN.aimBY; IN.aX = 0; IN.aY = 0;
     }
   }
 }, { passive: false });
@@ -985,9 +991,9 @@ function pips(lvl, max) {
   for (let i = 0; i < max; i++) s += i < lvl ? '●' : '○';
   return s;
 }
-function storeRow(parent, ico, name, desc, lvl, max, cost, onBuy) {
+function storeRow(parent, ico, name, desc, lvl, max, cost, onBuy, cls) {
   const row = document.createElement('div');
-  row.className = 'srow';
+  row.className = 'srow' + (cls ? ' ' + cls : '');
   const info = document.createElement('div');
   info.className = 'sinfo';
   info.innerHTML =
@@ -1015,13 +1021,13 @@ function renderStore() {
   META_UPS.forEach(u => {
     const lvl = META.up[u.id];
     storeRow(el.storeups, u.ico, u.name, u.desc, lvl, u.max, metaCost(u.base, lvl),
-      () => { META.pts -= metaCost(u.base, lvl); META.up[u.id]++; toast(u.ico + ' ' + u.name + ' +' + META.up[u.id]); });
+      () => { META.pts -= metaCost(u.base, lvl); META.up[u.id]++; toast(u.ico + ' ' + u.name + ' +' + META.up[u.id]); }, 'up');
   });
   el.storeitems.innerHTML = '';
   META_ITEMS.forEach(u => {
     const lvl = META[u.id];
     storeRow(el.storeitems, u.ico, u.name, u.desc, lvl, u.max, metaCost(u.base, lvl),
-      () => { META.pts -= metaCost(u.base, lvl); META[u.id]++; toast(u.ico + ' ' + u.name); });
+      () => { META.pts -= metaCost(u.base, lvl); META[u.id]++; toast(u.ico + ' ' + u.name); }, 'item');
   });
   el.storeweapons.innerHTML = '';
   Object.keys(WEAPONS).forEach(id => {
@@ -1029,7 +1035,7 @@ function renderStore() {
     const owned = META.weapons[id];
     const equipped = META.weapon === id;
     const row = document.createElement('div');
-    row.className = 'srow' + (equipped ? ' equipped' : '');
+    row.className = 'srow wpn' + (equipped ? ' equipped' : '');
     const info = document.createElement('div');
     info.className = 'sinfo';
     info.innerHTML =
@@ -1374,7 +1380,90 @@ function drawDiamond(x, y, r, rot, color, fill) {
   ctx.restore();
 }
 
+/* ---- main-menu backdrop: retro outer-space "Tron" scene ---- */
+let stars = [];
+function buildStars() {
+  stars = [];
+  const n = Math.max(80, Math.floor((W * H) / 9000));
+  for (let i = 0; i < n; i++) {
+    stars.push({ x: Math.random() * W, y: Math.random() * H * 0.62, z: rand(0.25, 1), tw: rand(0, TAU) });
+  }
+}
+
+function drawMenuBG() {
+  const t = performance.now() / 1000;
+  // deep space gradient
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, '#020208');
+  g.addColorStop(0.55, '#060818');
+  g.addColorStop(0.8, '#0d0724');
+  g.addColorStop(1, '#120a2e');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+  // twinkling starfield
+  ctx.fillStyle = '#cfeaff';
+  for (const s of stars) {
+    ctx.globalAlpha = (0.35 + 0.65 * Math.abs(Math.sin(t * 1.6 + s.tw))) * s.z;
+    const sz = s.z * 2.4;
+    ctx.fillRect(s.x, s.y, sz, sz);
+  }
+  ctx.globalAlpha = 1;
+  const hz = H * 0.62; // horizon line
+  // neon sun (synthwave, partially below horizon)
+  const sunX = W / 2, sunR = Math.min(W, H) * 0.24;
+  ctx.save();
+  ctx.beginPath(); ctx.rect(0, 0, W, hz); ctx.clip();
+  const sg = ctx.createLinearGradient(0, hz - sunR * 2, 0, hz);
+  sg.addColorStop(0, '#ffe27a');
+  sg.addColorStop(0.55, '#ff9e57');
+  sg.addColorStop(1, '#ff4d6d');
+  ctx.fillStyle = sg;
+  ctx.beginPath(); ctx.arc(sunX, hz, sunR, 0, TAU); ctx.fill();
+  // scanline gaps widening toward the bottom
+  ctx.fillStyle = '#0d0724';
+  for (let i = 0; i < 7; i++) {
+    const yy = hz - sunR + (i / 7) * sunR * 2;
+    if (yy < hz - sunR * 0.1) continue;
+    ctx.fillRect(sunX - sunR - 4, yy, sunR * 2 + 8, 1.5 + i * 1.8);
+  }
+  ctx.restore();
+  // magenta glow wash just above the horizon
+  const mg = ctx.createLinearGradient(0, hz - 110, 0, hz);
+  mg.addColorStop(0, 'rgba(255,77,221,0)');
+  mg.addColorStop(1, 'rgba(255,77,221,0.14)');
+  ctx.fillStyle = mg;
+  ctx.fillRect(0, hz - 110, W, 110);
+  // perspective grid floor (Tron)
+  ctx.strokeStyle = 'rgba(70,246,255,0.45)';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  const vpx = W / 2;
+  for (let i = -12; i <= 12; i++) {
+    ctx.moveTo(vpx + i * W * 0.018, hz);
+    ctx.lineTo(vpx + i * W * 0.24, H);
+  }
+  const scroll = (t * 0.4) % 1;
+  for (let i = 0; i < 12; i++) {
+    const p = (i + scroll) / 12;
+    const y = hz + (H - hz) * p * p;
+    ctx.moveTo(0, y); ctx.lineTo(W, y);
+  }
+  ctx.stroke();
+  // glowing horizon line
+  ctx.strokeStyle = 'rgba(255,77,221,0.85)';
+  ctx.lineWidth = 2.5;
+  ctx.shadowColor = '#ff4dd9'; ctx.shadowBlur = 14;
+  ctx.beginPath(); ctx.moveTo(0, hz); ctx.lineTo(W, hz); ctx.stroke();
+  ctx.shadowBlur = 0;
+}
+
 function draw() {
+  // main menu gets the full-screen Tron backdrop instead of the world
+  if (G.mode === 'menu') {
+    drawMenuBG();
+    if (vigGrad) { ctx.fillStyle = vigGrad; ctx.fillRect(0, 0, W, H); }
+    return;
+  }
   updateCamera();
   ctx.fillStyle = COL.bg;
   ctx.fillRect(0, 0, W, H);
@@ -1598,9 +1687,9 @@ function draw() {
   if (vigGrad) { ctx.fillStyle = vigGrad; ctx.fillRect(0, 0, W, H); }
 
   // touch controls — screen space (only while playing, on touch devices)
-  if (G.mode === 'playing' && (IN.mActive || IN.aActive || 'ontouchstart' in window)) {
-    // nuke button
-    const bx = IN.nukeBX, by = IN.nukeBY, br = 46;
+  if (G.mode === 'playing' && 'ontouchstart' in window) {
+    // nuke button (top-right, radius 34)
+    const bx = IN.nukeBX, by = IN.nukeBY, br = 34;
     const p2 = G.player;
     const armed = p2.nukes > 0;
     ctx.globalAlpha = armed ? 0.92 : 0.3;
@@ -1608,23 +1697,23 @@ function draw() {
     ctx.strokeStyle = '#ffd76a'; ctx.lineWidth = 3; ctx.stroke();
     ctx.fillStyle = '#ffd76a';
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.font = '700 22px sans-serif';
-    ctx.fillText('☢', bx, by - 9);
-    ctx.font = '700 13px sans-serif';
-    ctx.fillText('×' + p2.nukes, bx, by + 13);
+    ctx.font = '700 17px sans-serif';
+    ctx.fillText('☢', bx, by - 7);
+    ctx.font = '700 11px sans-serif';
+    ctx.fillText('×' + p2.nukes, bx, by + 10);
     ctx.globalAlpha = 1;
-    // sticks
-    const drawStick = (ox, oy, dx, dy, col) => {
-      ctx.globalAlpha = 0.3;
-      ctx.beginPath(); ctx.arc(ox, oy, 60, 0, TAU);
+    // fixed virtual sticks — always visible, knob follows the finger
+    const drawStick = (ox, oy, dx, dy, col, active) => {
+      ctx.globalAlpha = active ? 0.35 : 0.15;
+      ctx.beginPath(); ctx.arc(ox, oy, 62, 0, TAU);
       ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.stroke();
-      ctx.globalAlpha = 0.65;
+      ctx.globalAlpha = active ? 0.7 : 0.3;
       ctx.fillStyle = col;
-      ctx.beginPath(); ctx.arc(ox + dx * 60, oy + dy * 60, 24, 0, TAU); ctx.fill();
+      ctx.beginPath(); ctx.arc(ox + dx * 62, oy + dy * 62, 24, 0, TAU); ctx.fill();
       ctx.globalAlpha = 1;
     };
-    if (IN.mActive) drawStick(IN.mOX, IN.mOY, IN.mX, IN.mY, COL.player);
-    if (IN.aActive) drawStick(IN.aOX, IN.aOY, IN.aX, IN.aY, '#ff9e57');
+    drawStick(IN.moveBX, IN.moveBY, IN.mX, IN.mY, COL.player, IN.mActive);
+    drawStick(IN.aimBX, IN.aimBY, IN.aX, IN.aY, '#ff9e57', IN.aActive);
   }
 
   // low-hp pulse
