@@ -13,6 +13,9 @@ const lerp = (a, b, t) => a + (b - a) * t;
 const dist2 = (ax, ay, bx, by) => { const dx = ax - bx, dy = ay - by; return dx * dx + dy * dy; };
 const pick = (arr) => arr[(Math.random() * arr.length) | 0];
 
+/* single source of truth for the game version — shown on the menu badge */
+const GAME_VERSION = '2.4';
+
 /* ---------------- config ---------------- */
 const CFG = {
   step: 1 / 60,
@@ -363,12 +366,12 @@ function saveMeta() {
 }
 
 const META_UPS = [
-  { id: 'dmg',  ico: '💥', name: 'HEAVY PLATING', desc: '+8% bullet damage / lvl',       max: 10, base: 60 },
-  { id: 'rate', ico: '⚡', name: 'OVERCLOCKED',   desc: '+8% fire rate / lvl',           max: 10, base: 60 },
-  { id: 'spd',  ico: '👟', name: 'ION DRIVE',     desc: '+6% move speed / lvl',          max: 10, base: 60 },
-  { id: 'hull', ico: '❤', name: 'REINFORCED',    desc: '+20 max hull / lvl',            max: 10, base: 60 },
-  { id: 'mag',  ico: '🧲', name: 'TRACTOR MK-II', desc: '+15% pickup radius / lvl',      max: 5,  base: 80 },
-  { id: 'seek', ico: '🎯', name: 'SEEKER TUNE',   desc: '+1 starting homing stage / lvl', max: 3, base: 120 },
+  { id: 'dmg',  ico: '💥', name: 'HEAVY PLATING', desc: '+8% bullet damage / lvl',       max: 10, base: 60,  eff: 0.08 },
+  { id: 'rate', ico: '⚡', name: 'OVERCLOCKED',   desc: '+8% fire rate / lvl',           max: 10, base: 60,  eff: 0.08 },
+  { id: 'spd',  ico: '👟', name: 'ION DRIVE',     desc: '+6% move speed / lvl',          max: 10, base: 60,  eff: 0.06 },
+  { id: 'hull', ico: '❤', name: 'REINFORCED',    desc: '+20 max hull / lvl',            max: 10, base: 60,  eff: 20 },
+  { id: 'mag',  ico: '🧲', name: 'TRACTOR MK-II', desc: '+15% pickup radius / lvl',      max: 5,  base: 80,  eff: 0.15 },
+  { id: 'seek', ico: '🎯', name: 'SEEKER TUNE',   desc: '+1 starting homing stage / lvl', max: 3, base: 120, eff: 1 },
 ];
 const META_ITEMS = [
   { id: 'nukes', ico: '☢', name: 'NUKE CACHE',   desc: '+1 starting nuke',        max: 2, base: 150 },
@@ -376,28 +379,43 @@ const META_ITEMS = [
 ];
 const WEAPONS = {
   pulse:   { name: 'PULSE',   ico: '🔫', cost: 0,   desc: 'Standard issue. Balanced.' },
-  scatter: { name: 'SCATTER', ico: '🌪', cost: 400, desc: '+2 projectiles, -30% damage, wider spread' },
-  rail:    { name: 'RAILGUN', ico: '🔩', cost: 600, desc: '-55% fire rate, +220% damage, pierce +3' },
+  scatter: { name: 'SCATTER', ico: '🌪', cost: 400, desc: '+2 projectiles, -30% damage, wider spread',
+             proj: 2, dmgMul: 0.7, spread: 0.07 },
+  rail:    { name: 'RAILGUN', ico: '🔩', cost: 600, desc: '-55% fire rate, +220% damage, pierce +3',
+             rateMul: 0.45, dmgMul: 3.2, pierce: 3, spdMul: 1.4 },
 };
-function metaCost(base, lvl) { return Math.round(base * Math.pow(1.65, lvl)); }
+/* dev-tunable shop economy */
+const SHOP = {
+  costGrowth: 1.65,  // upgrade cost = round(base * costGrowth^lvl)
+  ptsDiv: 25,        // points earned = floor(score / ptsDiv)
+  nukeCap: 3,        // max nukes held even with NUKE CACHE
+};
+const SHOP_DEFAULTS = Object.assign({}, SHOP);
+const META_UPS_DEFAULTS = JSON.parse(JSON.stringify(META_UPS));
+const META_ITEMS_DEFAULTS = JSON.parse(JSON.stringify(META_ITEMS));
+const WEAPONS_DEFAULTS = JSON.parse(JSON.stringify(WEAPONS));
+function metaCost(base, lvl) { return Math.round(base * Math.pow(SHOP.costGrowth, lvl)); }
+function upDef(id) { return META_UPS.find((x) => x.id === id); }
 
 /* permanent bonuses applied at run start */
 function applyMeta(p) {
   const u = META.up;
-  p.dmg *= Math.pow(1.08, u.dmg);
-  p.fireRate *= Math.pow(1.08, u.rate);
-  p.speed *= Math.pow(1.06, u.spd);
-  p.maxhp += 20 * u.hull;
+  p.dmg *= Math.pow(1 + upDef('dmg').eff, u.dmg);
+  p.fireRate *= Math.pow(1 + upDef('rate').eff, u.rate);
+  p.speed *= Math.pow(1 + upDef('spd').eff, u.spd);
+  p.maxhp += upDef('hull').eff * u.hull;
   p.hp = p.maxhp;
-  p.magnet *= Math.pow(1.15, u.mag);
-  p.seek = Math.min(5, 1 + u.seek);
-  p.nukes = Math.min(3, 1 + META.nukes);
+  p.magnet *= Math.pow(1 + upDef('mag').eff, u.mag);
+  p.seek = Math.min(5, 1 + u.seek * upDef('seek').eff);
+  p.nukes = Math.min(SHOP.nukeCap, 1 + META.nukes);
   p.shields = META.aegis;
-  if (META.weapon === 'scatter') {
-    p.proj += 2; p.dmg *= 0.7; p.spreadBonus = 0.07;
-  } else if (META.weapon === 'rail') {
-    p.fireRate *= 0.45; p.dmg *= 3.2; p.pierce += 3; p.bulletSpeed *= 1.4;
-  }
+  const w = WEAPONS[META.weapon] || WEAPONS.pulse;
+  if (w.proj) p.proj += w.proj;
+  if (w.dmgMul && w.dmgMul !== 1) p.dmg *= w.dmgMul;
+  if (w.rateMul && w.rateMul !== 1) p.fireRate *= w.rateMul;
+  if (w.pierce) p.pierce += w.pierce;
+  if (w.spdMul && w.spdMul !== 1) p.bulletSpeed *= w.spdMul;
+  if (w.spread) p.spreadBonus = w.spread;
 }
 
 // dev-tunable player base stats (applied on run start)
@@ -892,7 +910,8 @@ const el = {};
  'stats', 'newbest', 'bestline', 'ptsline', 'toast', 'warnbanner',
  'store', 'storebtn', 'storeback', 'storepts', 'storeups', 'storeitems', 'storeweapons',
  'startbtn', 'retrybtn', 'menubtn', 'resumebtn', 'quitbtn', 'pausebtn', 'mutebtn',
- 'devlogo', 'devbtn', 'devmenu', 'devbody', 'devrestart', 'devreset', 'devback'
+ 'devlogo', 'devbtn', 'devmenu', 'devbody', 'devrestart', 'devreset', 'devback',
+ 'shopdevbtn', 'shopdev', 'shopdevbody', 'shopdevback', 'shopdevreset'
 ].forEach(id => { el[id] = document.getElementById(id); });
 
 function toast(msg, ms) {
@@ -983,7 +1002,7 @@ function gameOver() {
     G.best = G.score;
     try { localStorage.setItem('neonvoid_best', String(G.best)); } catch (e) {}
   }
-  const earned = Math.floor(G.score / 25);
+  const earned = Math.floor(G.score / SHOP.ptsDiv);
   if (earned > 0) { META.pts += earned; saveMeta(); }
   el.stats.innerHTML =
     '<div><div class="sv">' + Math.floor(G.score).toLocaleString('en-US') + '</div><div class="sl">SCORE</div></div>' +
@@ -1291,6 +1310,113 @@ function devResetAll() {
   AU.click();
 }
 
+/* ============================================================
+   SHOP DEV — hidden tuner inside the Void Market
+   Access: tap the ◈ points header in the store 7x.
+   Same rhythm as the main dev unlock: silent on 1-3, countdown on 4-6, unlock on 7.
+   ============================================================ */
+const SHOPDEV_KEY = 'neonvoid_shopdev';
+let shopDevTaps = 0, shopDevTapLast = 0;
+
+function devShopTap() {
+  const now = performance.now();
+  if (now - shopDevTapLast > 1400) shopDevTaps = 0; // taps must be in a row
+  shopDevTapLast = now;
+  shopDevTaps++;
+  if (shopDevTaps === 4) toast('UNLOCK IN 3');
+  else if (shopDevTaps === 5) toast('UNLOCK IN 2');
+  else if (shopDevTaps === 6) toast('UNLOCK IN 1');
+  else if (shopDevTaps >= 7) {
+    shopDevTaps = 0;
+    unlockShopDev();
+    toast('UNLOCKED');
+    AU.click();
+  }
+}
+function unlockShopDev() {
+  el.shopdevbtn.classList.remove('hidden');
+  try { localStorage.setItem(SHOPDEV_KEY, '1'); } catch (e) {}
+}
+function openShopDev() {
+  AU.click();
+  renderShopDev();
+  el.store.classList.add('hidden');
+  el.shopdev.classList.remove('hidden');
+}
+function closeShopDev() {
+  AU.click();
+  el.shopdev.classList.add('hidden');
+  el.store.classList.remove('hidden');
+  renderStore(); // prices may have changed
+  refreshMenuPts();
+}
+function renderShopDev() {
+  const b = el.shopdevbody;
+  b.innerHTML = '';
+  const num = (parent, label, obj, key, step, min, max, dec) =>
+    parent.appendChild(devNum(label, () => obj[key], (v) => { obj[key] = v; }, step, min, max, dec));
+
+  b.appendChild(devSection('ECONOMY · applies immediately'));
+  let g = devGrid(); b.appendChild(g);
+  num(g, 'Cost growth / lvl', SHOP, 'costGrowth', 0.05, 1, 5, 2);
+  num(g, 'Score per point', SHOP, 'ptsDiv', 1, 1, 500, 0);
+  num(g, 'Nuke hold cap', SHOP, 'nukeCap', 1, 1, 9, 0);
+
+  b.appendChild(devSection('PERMANENT UPGRADES · cost & effect'));
+  META_UPS.forEach((u) => {
+    const dh = document.createElement('div');
+    dh.className = 'devtype';
+    dh.textContent = u.ico + ' ' + u.name;
+    b.appendChild(dh);
+    g = devGrid(); b.appendChild(g);
+    num(g, 'Base cost', u, 'base', 5, 0, 9999, 0);
+    num(g, 'Max level', u, 'max', 1, 1, 99, 0);
+    if (u.id === 'hull') num(g, 'Hull / lvl', u, 'eff', 1, 0, 999, 0);
+    else if (u.id === 'seek') num(g, 'Homing / lvl', u, 'eff', 1, 0, 9, 0);
+    else g.appendChild(devNum('Effect / lvl (%)', () => u.eff * 100, (v) => { u.eff = v / 100; }, 1, 0, 200, 0));
+  });
+
+  b.appendChild(devSection('SUPPLIES · cost & max'));
+  META_ITEMS.forEach((u) => {
+    const dh = document.createElement('div');
+    dh.className = 'devtype';
+    dh.textContent = u.ico + ' ' + u.name;
+    b.appendChild(dh);
+    g = devGrid(); b.appendChild(g);
+    num(g, 'Base cost', u, 'base', 5, 0, 9999, 0);
+    num(g, 'Max level', u, 'max', 1, 1, 99, 0);
+  });
+
+  b.appendChild(devSection('WEAPONS · cost & mods'));
+  const MOD_LABELS = { proj: ['Projectiles', 1, 0, 99, 0], dmgMul: ['Damage ×', 0.05, 0, 99, 2],
+    rateMul: ['Fire rate ×', 0.05, 0, 99, 2], pierce: ['Pierce', 1, 0, 99, 0],
+    spdMul: ['Bullet speed ×', 0.05, 0, 99, 2], spread: ['Spread', 0.01, 0, 1, 2] };
+  Object.keys(WEAPONS).forEach((id) => {
+    const w = WEAPONS[id];
+    const dh = document.createElement('div');
+    dh.className = 'devtype';
+    dh.textContent = w.ico + ' ' + w.name;
+    b.appendChild(dh);
+    g = devGrid(); b.appendChild(g);
+    num(g, 'Cost', w, 'cost', 25, 0, 99999, 0);
+    Object.keys(MOD_LABELS).forEach((k) => {
+      if (typeof w[k] === 'number') {
+        const L = MOD_LABELS[k];
+        num(g, L[0], w, k, L[1], L[2], L[3], L[4]);
+      }
+    });
+  });
+}
+function shopDevReset() {
+  Object.assign(SHOP, SHOP_DEFAULTS);
+  META_UPS.forEach((u, i) => Object.assign(u, JSON.parse(JSON.stringify(META_UPS_DEFAULTS[i]))));
+  META_ITEMS.forEach((u, i) => Object.assign(u, JSON.parse(JSON.stringify(META_ITEMS_DEFAULTS[i]))));
+  Object.keys(WEAPONS).forEach((id) => Object.assign(WEAPONS[id], JSON.parse(JSON.stringify(WEAPONS_DEFAULTS[id]))));
+  renderShopDev();
+  toast('SHOP DEFAULTS RESTORED');
+  AU.click();
+}
+
 el.startbtn.addEventListener('click', startGame);
 el.retrybtn.addEventListener('click', startGame);
 el.menubtn.addEventListener('click', () => {
@@ -1312,8 +1438,14 @@ el.devrestart.addEventListener('click', () => {
   el.devmenu.classList.add('hidden');
   startGame();
 });
+el.storepts.addEventListener('click', devShopTap);
+el.shopdevbtn.addEventListener('click', openShopDev);
+el.shopdevback.addEventListener('click', closeShopDev);
+el.shopdevreset.addEventListener('click', shopDevReset);
+el.devlogo.textContent = '◈ v' + GAME_VERSION; // the badge is the real version
 try {
   if (localStorage.getItem(DEV_KEY) === '1') el.devbtn.classList.remove('hidden');
+  if (localStorage.getItem(SHOPDEV_KEY) === '1') el.shopdevbtn.classList.remove('hidden');
 } catch (e) {}
 el.resumebtn.addEventListener('click', togglePause);
 el.quitbtn.addEventListener('click', () => {
@@ -1997,7 +2129,7 @@ refreshMenuPts();
 window.addEventListener('blur', () => { IN.keys = {}; });
 
 // headless test hook
-window.__NV = { G, CFG, IN, META, WEAPONS, startGame, spawnEnemy, gainXP, damagePlayer, damageEnemy, rollUpgrades, applyUpgrade, fireNuke, update, draw, updateHUD, updateCamera, ETYPES, PBASE, devLogoTap, unlockDev, renderDev, devResetAll, openDev };
+window.__NV = { G, CFG, IN, META, WEAPONS, startGame, spawnEnemy, gainXP, damagePlayer, damageEnemy, rollUpgrades, applyUpgrade, fireNuke, update, draw, updateHUD, updateCamera, ETYPES, PBASE, SHOP, META_UPS, META_ITEMS, GAME_VERSION, devLogoTap, unlockDev, renderDev, devResetAll, openDev, devShopTap, unlockShopDev, renderShopDev, shopDevReset, openShopDev };
 
 if (window.location.hash.indexOf('autodemo') >= 0) {
   G.demo = true;
