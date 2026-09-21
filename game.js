@@ -14,7 +14,7 @@ const dist2 = (ax, ay, bx, by) => { const dx = ax - bx, dy = ay - by; return dx 
 const pick = (arr) => arr[(Math.random() * arr.length) | 0];
 
 /* single source of truth for the game version — shown on the menu badge */
-const GAME_VERSION = '3.3';
+const GAME_VERSION = '3.4';
 
 /* ---------------- config ---------------- */
 const CFG = {
@@ -1171,6 +1171,7 @@ const el = {};
  'stats', 'newbest', 'bestline', 'ptsline', 'toast', 'warnbanner',
  'store', 'storebtn', 'storeback', 'storepts', 'storeups', 'storeitems', 'storeweapons', 'storeslots',
  'skills', 'skillsbtn', 'pskillsbtn', 'skillgrid', 'skillslots', 'skillstag', 'skillsback',
+ 'enemies', 'enemiesbtn', 'penemiesbtn', 'enemygrid', 'enemiesback',
  'startbtn', 'retrybtn', 'menubtn', 'resumebtn', 'quitbtn', 'pausebtn', 'mutebtn',
  'devlogo', 'devbtn', 'devmenu', 'devbody', 'devrestart', 'devreset', 'devback',
  'devhub', 'hubrun', 'hublive', 'hubstore', 'hubclose',
@@ -1529,6 +1530,58 @@ function renderSkills() {
 }
 
 /* ============================================================
+   ENEMY TYPES — bestiary reference (menu + pause)
+   ============================================================ */
+let enemiesOrigin = 'menu';
+const ENEMY_INFO = [
+  { id: 'mite', name: 'MITE', ico: '▲', color: COL.mite,
+    desc: 'Fast, fragile triangle. Wobbles toward you in a jittery line — easy to pop, deadly in a swarm.' },
+  { id: 'dasher', name: 'DASHER', ico: '◆', color: COL.dasher,
+    desc: 'Chases, then freezes and flashes (windup) before dashing at 4.4× speed. Sidestep the telegraph.' },
+  { id: 'spitter', name: 'SPITTER', ico: '⬟', color: COL.spitter,
+    desc: 'Holds ~400 range, strafes sideways and fires aimed plasma with a slight lead. Priority target.' },
+  { id: 'tank', name: 'TANK', ico: '⬢', color: COL.tank,
+    desc: 'Slow red hexagon bruiser with a huge HP pool. Kite it — never trade hits.' },
+  { id: 'elite', name: 'ELITE', ico: '✦', color: COL.elite,
+    desc: 'Any type, supercharged: 5× HP, 1.5× damage, 5× score & XP. Magenta and angry.' },
+  { id: 'voidt', name: 'VOID-TOUCHED', ico: '◈', color: '#b14dff',
+    desc: 'Enemies crawling out of open voids: 1.45× HP, slightly faster, 2× score. Violet glow.' },
+  { id: 'warden', name: 'WARDEN', ico: '👁', color: COL.boss,
+    desc: 'The void boss. Emerges from an open void every 75s — kill it to seal that void. 13k base HP, scaling with run time and loop.' },
+];
+function openEnemies(origin) {
+  AU.init(); AU.click();
+  enemiesOrigin = origin || 'menu';
+  el.menu.classList.add('hidden');
+  el.paused.classList.add('hidden');
+  el.enemies.classList.remove('hidden');
+  renderEnemies();
+}
+function closeEnemies() {
+  AU.click();
+  el.enemies.classList.add('hidden');
+  if (enemiesOrigin === 'pause' && (G.mode === 'paused' || G.mode === 'levelup')) {
+    el.paused.classList.remove('hidden');
+  } else {
+    el.menu.classList.remove('hidden');
+    refreshMenuPts();
+  }
+}
+function renderEnemies() {
+  el.enemygrid.innerHTML = '';
+  ENEMY_INFO.forEach((e) => {
+    const t = ETYPES[e.id];
+    const stats = t ? '<div class="st">HP ' + t.hp + ' · SPD ' + t.spd + ' · DMG ' + t.dmg + '</div>' : '';
+    const d = document.createElement('div');
+    d.className = 'card scard';
+    d.innerHTML = '<div class="ico" style="color:' + e.color + '">' + e.ico + '</div>' +
+      '<div class="nm" style="color:' + e.color + '">' + e.name + '</div>' + stats +
+      '<div class="ds">' + e.desc + '</div>';
+    el.enemygrid.appendChild(d);
+  });
+}
+
+/* ============================================================
    DEV CONSOLE — hidden tuner menu
    Access: tap the tiny version badge on the main menu 7x.
    Taps 1-3 silent, tap 4/5/6 count down, tap 7 unlocks.
@@ -1675,6 +1728,15 @@ function liveSpawnElite() {
   spawnEnemy(pickType(G.time), pos.x, pos.y, true);
   toast('ELITE SPAWNED');
 }
+/* dev: drop one of a specific type near the player (not on top of them) */
+function liveSpawnType(type) {
+  const p = G.player, b = PB();
+  const a = rand(0, TAU), d = rand(220, 320);
+  spawnEnemy(type,
+    clamp(p.x + Math.cos(a) * d, b.x + 30, b.x + b.w - 30),
+    clamp(p.y + Math.sin(a) * d, b.y + 30, b.y + b.h - 30));
+  toast(type.toUpperCase() + ' SPAWNED');
+}
 function liveKillAll() {
   for (const e of [...G.enemies]) killEnemy(e);
   toast('FIELD CLEARED');
@@ -1683,7 +1745,7 @@ function liveLevel() { gainXP(G.xpNeed + 1); toast('+1 LEVEL'); }
 function liveRefillHP() { const p = G.player; p.hp = p.maxhp; updateHUD(); toast('HP REFILLED'); }
 function liveRefillNukes() { G.player.nukes = SHOP.nukeCap; updateHUD(); toast('NUKES REFILLED'); }
 function liveAddPts() { META.pts += 1000; saveMeta(); refreshMenuPts(); toast('+1000 PTS'); }
-function liveSkipTime() { G.time += 60; updateHUD(); toast('+60s'); }
+function liveSkipTime(s) { G.time += s; updateHUD(); toast('+' + s + 's'); }
 function liveRestart() {
   el.liveops.classList.add('hidden');
   el.devhub.classList.add('hidden');
@@ -1731,6 +1793,10 @@ function renderLiveOps() {
   liveBtn(g, 'FREEZE SPAWNS: ' + (G.devNoSpawn ? 'ON' : 'OFF'), () => { G.devNoSpawn = !G.devNoSpawn; });
   liveBtn(g, 'SPAWN WARDEN NOW', liveSpawnBoss);
   liveBtn(g, 'SPAWN ELITE NOW', liveSpawnElite);
+  liveBtn(g, 'SPAWN MITE', () => liveSpawnType('mite'));
+  liveBtn(g, 'SPAWN DASHER', () => liveSpawnType('dasher'));
+  liveBtn(g, 'SPAWN SPITTER', () => liveSpawnType('spitter'));
+  liveBtn(g, 'SPAWN TANK', () => liveSpawnType('tank'));
   liveBtn(g, 'KILL ALL ENEMIES', liveKillAll);
   // ---- player ----
   b.appendChild(devSection('PLAYER'));
@@ -1744,7 +1810,9 @@ function renderLiveOps() {
   b.appendChild(devSection('RUN'));
   g = devGrid();
   b.appendChild(g);
-  liveBtn(g, '+60s TIME', liveSkipTime);
+  liveBtn(g, '+10s TIME', () => liveSkipTime(10));
+  liveBtn(g, '+30s TIME', () => liveSkipTime(30));
+  liveBtn(g, '+60s TIME', () => liveSkipTime(60));
   liveBtn(g, '+1000 PTS', liveAddPts);
   liveBtn(g, '⟳ RESTART RUN', liveRestart);
 }
@@ -2144,6 +2212,9 @@ el.storebtn.addEventListener('click', openStore);
 el.skillsbtn.addEventListener('click', () => openSkills('menu'));
 el.pskillsbtn.addEventListener('click', () => openSkills('pause'));
 el.skillsback.addEventListener('click', closeSkills);
+el.enemiesbtn.addEventListener('click', () => openEnemies('menu'));
+el.penemiesbtn.addEventListener('click', () => openEnemies('pause'));
+el.enemiesback.addEventListener('click', closeEnemies);
 el.storeback.addEventListener('click', closeStore);
 el.devlogo.addEventListener('click', devLogoTap);
 el.devbtn.addEventListener('click', () => openDevHub('menu'));
@@ -3423,7 +3494,7 @@ if (window.visualViewport) {
 }
 
 // headless test hook
-window.__NV = { G, CFG, IN, META, WEAPONS, UPOOL, STORY, BADGES, startGame, spawnEnemy, gainXP, damagePlayer, damageEnemy, rollUpgrades, applyUpgrade, fireNuke, update, draw, updateHUD, updateCamera, ETYPES, PBASE, SHOP, META_UPS, META_ITEMS, GAME_VERSION, devLogoTap, unlockDev, renderDev, devResetAll, openDev, openDevHub, closeDevHub, backToHub, openLiveOps, renderLiveOps, liveSkipVoids, liveSkipToBoss, liveSealAll, liveToggleSpawnMode, liveSpawnBoss, liveSpawnElite, liveKillAll, liveLevel, liveRefillHP, liveRefillNukes, liveAddPts, liveSkipTime, devShopTap, unlockShopDev, renderShopDev, shopDevReset, openShopDev, wmod, setHelp, openHelp, closeHelp, startRupture, storySpawnBoss, continueStory, showStoryDone };
+window.__NV = { G, CFG, IN, META, WEAPONS, UPOOL, STORY, BADGES, startGame, spawnEnemy, gainXP, damagePlayer, damageEnemy, rollUpgrades, applyUpgrade, fireNuke, update, draw, updateHUD, updateCamera, ETYPES, PBASE, SHOP, META_UPS, META_ITEMS, GAME_VERSION, devLogoTap, unlockDev, renderDev, devResetAll, openDev, openDevHub, closeDevHub, backToHub, openLiveOps, renderLiveOps, liveSkipVoids, liveSkipToBoss, liveSealAll, liveToggleSpawnMode, liveSpawnBoss, liveSpawnElite, liveSpawnType, liveKillAll, liveLevel, liveRefillHP, liveRefillNukes, liveAddPts, liveSkipTime, devShopTap, unlockShopDev, renderShopDev, shopDevReset, openShopDev, wmod, setHelp, openHelp, closeHelp, openEnemies, closeEnemies, renderEnemies, startRupture, storySpawnBoss, continueStory, showStoryDone };
 
 if (window.location.hash.indexOf('autodemo') >= 0) {
   G.demo = true;
