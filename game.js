@@ -14,7 +14,7 @@ const dist2 = (ax, ay, bx, by) => { const dx = ax - bx, dy = ay - by; return dx 
 const pick = (arr) => arr[(Math.random() * arr.length) | 0];
 
 /* single source of truth for the game version — shown on the menu badge */
-const GAME_VERSION = '3.0';
+const GAME_VERSION = '3.1';
 
 /* ---------------- config ---------------- */
 const CFG = {
@@ -250,7 +250,7 @@ function resize() {
   buildStatic(); // rebuild cached vignette for new size
   // keep the calm-phase arena fully visible after resize
   if (G && G.story && G.story.phase === 'calm') {
-    G.story.fitZoom = clamp(Math.min(W / (STORY.smallW * 1.04), H / (STORY.smallH * 1.3)), 0.3, 1.25);
+    G.story.fitZoom = clamp(Math.min(W / STORY.smallW, H / STORY.smallH), 0.3, 2);
   }
   orientRefresh('resize');
 }
@@ -585,7 +585,7 @@ function resetGame() {
     const st = G.story;
     st.phase = 'calm';
     CFG.world.w = STORY.smallW; CFG.world.h = STORY.smallH;
-    st.fitZoom = clamp(Math.min(W / (STORY.smallW * 1.04), H / (STORY.smallH * 1.3)), 0.3, 1.25);
+    st.fitZoom = clamp(Math.min(W / STORY.smallW, H / STORY.smallH), 0.3, 2);
     // tears form at random spots, away from the player's start —
     // one tear per void per boss, so every tear becomes a void
     for (let i = 0; i < STORY.bossesToClose; i++) {
