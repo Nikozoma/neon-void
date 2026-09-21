@@ -121,6 +121,7 @@ h2.gold { color:#fff3d8; text-shadow:0 0 14px #ffb454, 0 0 50px rgba(255,180,84,
 }
 
 #nukeline { margin-top:4px; font-size:12px; letter-spacing:2px; color:#ffd76a; font-weight:700; }
+#fxline { margin-top:2px; font-size:11px; letter-spacing:2px; color:#7df9ff; font-weight:700; }
 .pts { margin-top:10px; color:#ffd76a; letter-spacing:2px; font-size:14px; font-weight:700; }
 .pts.big { font-size:18px; margin:2px 0 10px; }
 
