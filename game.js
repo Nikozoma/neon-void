@@ -14,7 +14,7 @@ const dist2 = (ax, ay, bx, by) => { const dx = ax - bx, dy = ay - by; return dx 
 const pick = (arr) => arr[(Math.random() * arr.length) | 0];
 
 /* single source of truth for the game version — shown on the menu badge */
-const GAME_VERSION = '3.2';
+const GAME_VERSION = '3.3';
 
 /* ---------------- config ---------------- */
 const CFG = {
@@ -73,10 +73,11 @@ const STORY = {
   voidBossEvery: 75,     // seconds between void bosses
   ruptureHold: 8,        // spawn pause after the rupture (s)
   warRampT: 45,          // voidwar spawn pressure ramps 55% -> 100% over this many seconds
-  calmCracks: 14,       // decorative pre-void cracks in the calm phase (visual only, NOT tied to void count)
-  crackSpread: 70,      // crack size (world px) — small fractures scattered like deep-space faults
-  smallW: 1200, smallH: 800,   // calm-phase arena (fully visible)
-  bigW: 2200, bigH: 1500,      // post-rupture arena
+  crackAt: 60,          // cracks begin forming this far into the calm (s), staggered over ~15s, then grow until rupture
+  calmCracks: 18,       // decorative pre-void cracks (visual only, NOT tied to void count), spread across the big map
+  crackSpread: 40,      // crack size (world px) — tiny distant fractures
+  smallW: 1200, smallH: 800,   // calm-phase arena — centered inside the big map
+  bigW: 2200, bigH: 1500,      // post-rupture arena (the full world, always)
 };
 const STORY_DEFAULTS = Object.assign({}, STORY);
 
@@ -208,6 +209,10 @@ function storyZoom() {
   if (!st || st.phase === 'off') return CFG.camZoom;
   return st.fitZoom;
 }
+/* current playable arena rect — falls back to the full world before a run starts */
+function PB() {
+  return G.bounds || { x: 0, y: 0, w: CFG.world.w, h: CFG.world.h };
+}
 function updateCamera() {
   cam.zoom = storyZoom();
   const p = G.player;
@@ -220,8 +225,9 @@ function updateCamera() {
     cam.y = CFG.world.h / 2 + Math.sin(t * 0.06) * 180;
   }
   const { hw, hh } = viewHalf();
-  cam.x = CFG.world.w <= hw * 2 ? CFG.world.w / 2 : clamp(cam.x, hw, CFG.world.w - hw);
-  cam.y = CFG.world.h <= hh * 2 ? CFG.world.h / 2 : clamp(cam.y, hh, CFG.world.h - hh);
+  const b = PB();
+  cam.x = b.w <= hw * 2 ? b.x + b.w / 2 : clamp(cam.x, b.x + hw, b.x + b.w - hw);
+  cam.y = b.h <= hh * 2 ? b.y + b.h / 2 : clamp(cam.y, b.y + hh, b.y + b.h - hh);
 }
 
 function resize() {
@@ -233,8 +239,9 @@ function resize() {
   S = Math.min(W, H) / 800;
   // keep player inside world after resize
   if (G && G.player) {
-    G.player.x = clamp(G.player.x, 30, CFG.world.w - 30);
-    G.player.y = clamp(G.player.y, 30, CFG.world.h - 30);
+    const b = PB();
+    G.player.x = clamp(G.player.x, b.x + 30, b.x + b.w - 30);
+    G.player.y = clamp(G.player.y, b.y + 30, b.y + b.h - 30);
   }
   // nuke button anchor (top-right), 25% smaller than the old dash button
   IN.nukeBX = W - 58;
@@ -380,6 +387,7 @@ const G = {
   spawnT: 0, eliteT: 0, bossT: 0, boss: null, bossCount: 0,
   upgrades: {},   // id -> stacks
   story: null,    // storyline state (see resetGame)
+  bounds: null,   // current playable arena rect {x,y,w,h} — centered small during calm, full world after rupture
   flash: 0,       // full-screen flash (nuke)
   muted: false,
   demo: false,
@@ -580,21 +588,31 @@ function resetGame() {
   if (STORY.on) {
     const st = G.story;
     st.phase = 'calm';
-    CFG.world.w = STORY.smallW; CFG.world.h = STORY.smallH;
+    // the calm arena is centered inside the full world — the rupture expands it outward
+    G.bounds = {
+      x: (STORY.bigW - STORY.smallW) / 2, y: (STORY.bigH - STORY.smallH) / 2,
+      w: STORY.smallW, h: STORY.smallH,
+    };
+    CFG.world.w = STORY.bigW; CFG.world.h = STORY.bigH; // the world is always full-size now
     st.fitZoom = clamp(Math.min(W / STORY.smallW, H / STORY.smallH), 0.3, 2);
-    // decorative pre-void cracks: small, abundant, NOT tied to the void count —
-    // the vibe of deep space fracturing all around you
+    // void cracks: nothing at first — they begin forming around crackAt, staggered
+    // over ~15s, then grow until the rupture. tiny, spread tastefully across the
+    // whole big map (inside the small stage too), blue while cracking.
     for (let i = 0; i < STORY.calmCracks; i++) {
       let x = 0, y = 0, tries = 0;
       do {
-        x = rand(140, STORY.smallW - 140);
-        y = rand(140, STORY.smallH - 140);
+        x = rand(140, STORY.bigW - 140);
+        y = rand(140, STORY.bigH - 140);
         tries++;
-      } while (tries < 20 && Math.hypot(x - STORY.smallW / 2, y - STORY.smallH / 2) < 260);
-      st.tears.push(genTear(x, y, STORY.crackSpread));
+      } while (tries < 40 && (Math.hypot(x - STORY.bigW / 2, y - STORY.bigH / 2) < 220 ||
+        st.tears.some(c => Math.hypot(x - c.x, y - c.y) < 250)));
+      st.tears.push(Object.assign(genTear(x, y, STORY.crackSpread), {
+        x, y, appearAt: STORY.crackAt + rand(0, 15),
+      }));
     }
   } else {
     CFG.world.w = STORY.bigW; CFG.world.h = STORY.bigH;
+    G.bounds = { x: 0, y: 0, w: STORY.bigW, h: STORY.bigH };
   }
 }
 
@@ -769,11 +787,12 @@ const ETYPES_DEFAULTS = JSON.parse(JSON.stringify(ETYPES));
 function spawnRing(margin) {
   const m = margin || 60;
   const vh = viewHalf();
+  const b = PB();
   const r = Math.hypot(vh.hw, vh.hh) + m;
   const a = rand(0, TAU);
   return {
-    x: clamp(cam.x + Math.cos(a) * r, 24, CFG.world.w - 24),
-    y: clamp(cam.y + Math.sin(a) * r, 24, CFG.world.h - 24),
+    x: clamp(cam.x + Math.cos(a) * r, b.x + 24, b.x + b.w - 24),
+    y: clamp(cam.y + Math.sin(a) * r, b.y + 24, b.y + b.h - 24),
   };
 }
 
@@ -903,21 +922,22 @@ function updateSpawns(dt) {
 /* spawn point at the rim of a random open void */
 function voidSpawnPos(open) {
   const v = pick(open);
+  const b = PB();
   const a = rand(0, TAU), d = v.r * rand(1.1, 1.6);
   return {
-    x: clamp(v.x + Math.cos(a) * d, 24, CFG.world.w - 24),
-    y: clamp(v.y + Math.sin(a) * d, 24, CFG.world.h - 24),
+    x: clamp(v.x + Math.cos(a) * d, b.x + 24, b.x + b.w - 24),
+    y: clamp(v.y + Math.sin(a) * d, b.y + 24, b.y + b.h - 24),
   };
 }
 
 /* spawn point along a random edge of the map (regular enemies pour in from the rim) */
 function spawnEdge() {
-  const m = 50, w = CFG.world.w, h = CFG.world.h;
+  const m = 50, b = PB();
   const side = irand(0, 3);
-  if (side === 0) return { x: rand(m, w - m), y: m };
-  if (side === 1) return { x: rand(m, w - m), y: h - m };
-  if (side === 2) return { x: m, y: rand(m, h - m) };
-  return { x: w - m, y: rand(m, h - m) };
+  if (side === 0) return { x: rand(b.x + m, b.x + b.w - m), y: b.y + m };
+  if (side === 1) return { x: rand(b.x + m, b.x + b.w - m), y: b.y + b.h - m };
+  if (side === 2) return { x: b.x + m, y: rand(b.y + m, b.y + b.h - m) };
+  return { x: b.x + b.w - m, y: rand(b.y + m, b.y + b.h - m) };
 }
 
 /* ---------------- boss: WARDEN ---------------- */
@@ -1948,6 +1968,7 @@ function renderDev() {
   num(g, 'Void boss every (s)', STORY, 'voidBossEvery', 5, 10, 600, 0, 'story_bossevery');
   num(g, 'Rupture hold (s)', STORY, 'ruptureHold', 1, 0, 30, 0, 'story_hold');
   num(g, 'War ramp (s)', STORY, 'warRampT', 5, 0, 120, 0, 'story_wartramp');
+  num(g, 'Cracks at (s)', STORY, 'crackAt', 5, 0, 300, 0, 'story_crackat');
   num(g, 'Calm cracks', STORY, 'calmCracks', 1, 0, 40, 0, 'story_cracks');
   num(g, 'Crack spread', STORY, 'crackSpread', 5, 20, 200, 0, 'story_crackspread');
 
@@ -2221,11 +2242,14 @@ function updateStory(dt) {
     if (t >= STORY.tearAt) startRupture();
   } else if (st.phase === 'rupture') {
     st.ruptureT += dt;
-    // arena walls explode outward over 2.5s
+    // the centered small arena's walls explode outward to the full world over 2.5s
     const k = clamp(st.ruptureT / 2.5, 0, 1);
     const e = 1 - Math.pow(1 - k, 3);
-    CFG.world.w = lerp(STORY.smallW, STORY.bigW, e);
-    CFG.world.h = lerp(STORY.smallH, STORY.bigH, e);
+    const b0 = st.b0 || { x: 0, y: 0, w: STORY.smallW, h: STORY.smallH };
+    G.bounds = {
+      x: lerp(b0.x, 0, e), y: lerp(b0.y, 0, e),
+      w: lerp(b0.w, STORY.bigW, e), h: lerp(b0.h, STORY.bigH, e),
+    };
     for (const v of st.voids) v.open = Math.min(1, v.open + dt * 1.4);
     if (st.ruptureT >= 3 && !st.warAnnounced) {
       st.warAnnounced = true;
@@ -2262,13 +2286,13 @@ function startRupture() {
   st.phase = 'rupture';
   st.ruptureT = 0;
   st.warT = 0;
-  // voids tear open scattered across the FULL post-rupture map —
-  // spread out with min separation, kept away from the player's position
-  st.voids = scatterVoids(STORY.bossesToClose).map(p => ({
+  st.b0 = Object.assign({}, G.bounds); // the small centered arena, for the wall-explosion animation
+  // voids burst open: one dead-center next to the player, the rest in the four corners
+  st.voids = placeVoids(STORY.bossesToClose).map(p => ({
     x: p.x, y: p.y, r: rand(58, 80),
     seed: rand(0, TAU), open: 0, sealed: false,
   }));
-  st.tears = []; // the decorative cracks are gone — the real voids are here
+  // the cracks stay — they turn void-purple once the voids open
   // the blast wipes the field (full kill rewards — a celebratory clear)
   for (const e of G.enemies.slice()) {
     if (e.boss) damageEnemy(e, 1500, 0, 0, false);
@@ -2281,28 +2305,29 @@ function startRupture() {
   AU.rupture();
   showWarn('⚠ THE VOID TEARS OPEN ⚠');
   toast('SPACE ITSELF IS RUPTURED');
-  // wall debris along the old border
+  // wall debris along the old border (the small centered arena)
+  const ob = st.b0;
   for (let i = 0; i < 80; i++) {
     const side = irand(0, 3);
-    const x = side < 2 ? rand(0, STORY.smallW) : (side === 2 ? 0 : STORY.smallW);
-    const y = side < 2 ? (side === 0 ? 0 : STORY.smallH) : rand(0, STORY.smallH);
+    const x = side < 2 ? rand(ob.x, ob.x + ob.w) : (side === 2 ? ob.x : ob.x + ob.w);
+    const y = side < 2 ? (side === 0 ? ob.y : ob.y + ob.h) : rand(ob.y, ob.y + ob.h);
     spawnParts(x, y, pick(['#46f6ff', '#ffffff', '#b14dff']), 1, rand(120, 380), rand(0.6, 1.4), rand(3, 6));
   }
   updateHUD();
 }
 
-/* scatter n void positions across the big map: min separation from each other
-   and from the player, so the 5 voids spread out over the whole play area */
-function scatterVoids(n) {
-  const pts = [];
-  let guard = 0;
-  while (pts.length < n && guard++ < 400) {
-    const x = rand(200, STORY.bigW - 200), y = rand(200, STORY.bigH - 200);
-    if (Math.hypot(x - STORY.bigW / 2, y - STORY.bigH / 2) < 400) continue; // not on the player
-    if (pts.some(p => Math.hypot(p.x - x, p.y - y) < 520)) continue;        // spread out
-    pts.push({ x, y });
+/* void placement: the first void opens dead-center (right next to the player),
+   the rest take the four corners of the big map (cycling if there are more) */
+function placeVoids(n) {
+  const pts = [{ x: STORY.bigW / 2 + rand(-60, 60), y: STORY.bigH / 2 + rand(-60, 60) }];
+  const corners = [
+    { x: 300, y: 300 }, { x: STORY.bigW - 300, y: 300 },
+    { x: 300, y: STORY.bigH - 300 }, { x: STORY.bigW - 300, y: STORY.bigH - 300 },
+  ];
+  for (let i = 1; i < n; i++) {
+    const c = corners[(i - 1) % 4];
+    pts.push({ x: c.x + rand(-90, 90), y: c.y + rand(-90, 90) });
   }
-  while (pts.length < n) pts.push({ x: rand(220, STORY.bigW - 220), y: rand(220, STORY.bigH - 220) });
   return pts;
 }
 
@@ -2408,16 +2433,8 @@ function continueStory() {
   st.bossT = STORY.voidBossFirst;
   st.scars.length = 0;
   st.voids = [];
-  const p = G.player;
-  for (let i = 0; i < STORY.bossesToClose; i++) {
-    let x = 0, y = 0, tries = 0;
-    do {
-      x = rand(160, CFG.world.w - 160);
-      y = rand(160, CFG.world.h - 160);
-      tries++;
-    } while (tries < 30 && (Math.hypot(x - p.x, y - p.y) < 320 ||
-      st.voids.some(v => Math.hypot(x - v.x, y - v.y) < 320)));
-    st.voids.push({ x, y, r: rand(58, 80), seed: rand(0, TAU), open: 0, sealed: false });
+  for (const p of placeVoids(STORY.bossesToClose)) {
+    st.voids.push({ x: p.x, y: p.y, r: rand(58, 80), seed: rand(0, TAU), open: 0, sealed: false });
   }
   G.flash = 0.7;
   addShake(0.8);
@@ -2469,8 +2486,9 @@ function updatePlayer(dt, inp) {
   const k = 1 - Math.exp(-12 * dt);
   p.vx = lerp(p.vx, tx, k);
   p.vy = lerp(p.vy, ty, k);
-  p.x = clamp(p.x + p.vx * dt, p.r, CFG.world.w - p.r);
-  p.y = clamp(p.y + p.vy * dt, p.r, CFG.world.h - p.r);
+  const b = PB();
+  p.x = clamp(p.x + p.vx * dt, b.x + p.r, b.x + b.w - p.r);
+  p.y = clamp(p.y + p.vy * dt, b.y + p.r, b.y + b.h - p.r);
   p.inv = Math.max(0, p.inv - dt);
 
   // facing / firing
@@ -2494,7 +2512,7 @@ function updateBullets(dt) {
   for (let i = G.bullets.length - 1; i >= 0; i--) {
     const b = G.bullets[i];
     b.life -= dt; b.t += dt;
-    if (b.life <= 0 || b.x < -40 || b.x > CFG.world.w + 40 || b.y < -40 || b.y > CFG.world.h + 40) {
+    if (b.life <= 0 || b.x < PB().x - 40 || b.x > PB().x + PB().w + 40 || b.y < PB().y - 40 || b.y > PB().y + PB().h + 40) {
       G.bullets.splice(i, 1); continue;
     }
     // heat-seeking: steer toward the nearest enemy roughly ahead of the bullet
@@ -2635,7 +2653,7 @@ function updateEBullets(dt) {
   for (let i = G.ebullets.length - 1; i >= 0; i--) {
     const b = G.ebullets[i];
     b.life -= dt; b.t += dt;
-    if (b.life <= 0 || b.x < -40 || b.x > CFG.world.w + 40 || b.y < -40 || b.y > CFG.world.h + 40) {
+    if (b.life <= 0 || b.x < PB().x - 40 || b.x > PB().x + PB().w + 40 || b.y < PB().y - 40 || b.y > PB().y + PB().h + 40) {
       G.ebullets.splice(i, 1); continue;
     }
     b.x += b.vx * dt; b.y += b.vy * dt;
@@ -2850,22 +2868,32 @@ function strokeTear(pts, color, width, glow) {
 }
 
 /* tears forming during the calm phase — grow brighter toward tearAt */
+/* void cracks: tiny distant fractures. nothing at first — they begin forming
+   around STORY.crackAt (staggered), grow until the rupture, and STAY after the
+   voids open. blue while cracking, void-purple once the voids are open. */
 function drawTears() {
   const st = G.story;
-  if (!st || st.phase !== 'calm' || !st.tears.length) return;
+  if (!st || st.phase === 'off' || !st.tears.length) return;
   const t = performance.now() / 1000;
-  const k = clamp(G.time / STORY.tearAt, 0, 1);
-  const g = Math.pow(k, 1.6);                    // slow start, violent finish
-  const surge = k > 0.85 ? (k - 0.85) / 0.15 : 0; // final stretch: flare
-  const flick = 0.75 + 0.25 * Math.sin(t * (2 + g * 14) + 1);
-  const w = (1.5 + g * 5 + surge * 4) * flick;
-  const col = g < 0.5 ? '#46f6ff' : g < 0.85 ? '#b14dff' : '#ff4dd9';
+  const ruptured = st.phase !== 'calm';
+  const col = ruptured ? '#b14dff' : '#46f6ff';
+  // near-rupture flare
+  const rk = st.phase === 'calm' ? clamp(G.time / STORY.tearAt, 0, 1) : 1;
+  const surge = rk > 0.85 ? (rk - 0.85) / 0.15 : 0;
   ctx.save();
   ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-  ctx.shadowColor = col; ctx.shadowBlur = 6 + g * 22 + surge * 18;
   for (const tr of st.tears) {
-    const wob = Math.sin(t * 3 + tr.seed) * 2 * g;
+    if (G.time < tr.appearAt) continue; // not formed yet
+    // grow from a hairline to full size between appearance and rupture
+    const g = Math.pow(clamp((G.time - tr.appearAt) / Math.max(1, STORY.tearAt - tr.appearAt), 0, 1), 1.6);
+    const fade = clamp((G.time - tr.appearAt) / 3, 0, 1); // ease in over ~3s
+    if (fade <= 0) continue;
+    const flick = 0.75 + 0.25 * Math.sin(t * (2 + g * 14) + tr.seed);
+    const w = (1 + g * 3 + surge * 4) * flick * fade;
     ctx.save();
+    ctx.shadowColor = col; ctx.shadowBlur = (4 + g * 16 + surge * 18) * fade;
+    ctx.globalAlpha = fade;
+    const wob = Math.sin(t * 3 + tr.seed) * 2 * g;
     ctx.translate(wob, -wob);
     strokeTear(tr.pts, '#05060f', w * 1.9, false); // dark core
     strokeTear(tr.pts, col, w, true);              // neon rim
@@ -2999,19 +3027,21 @@ function draw() {
   }
   ctx.stroke();
 
-  // arena border (world bounds)
+  // arena border (current playable bounds)
+  const ab = PB();
   ctx.strokeStyle = 'rgba(70,246,255,0.35)';
   ctx.lineWidth = 3;
-  ctx.strokeRect(2, 2, CFG.world.w - 4, CFG.world.h - 4);
+  ctx.strokeRect(ab.x + 2, ab.y + 2, ab.w - 4, ab.h - 4);
   // rupture: fading echo of the old small-arena walls as they explode outward
   const rst = G.story;
   if (rst && rst.phase === 'rupture') {
     const k = clamp(rst.ruptureT / 2.5, 0, 1);
+    const b0 = rst.b0 || ab;
     ctx.save();
     ctx.globalAlpha = 1 - k;
     ctx.strokeStyle = 'rgba(70,246,255,0.6)';
     ctx.lineWidth = 3;
-    ctx.strokeRect(2, 2, STORY.smallW - 4, STORY.smallH - 4);
+    ctx.strokeRect(b0.x + 2, b0.y + 2, b0.w - 4, b0.h - 4);
     ctx.restore();
   }
 
