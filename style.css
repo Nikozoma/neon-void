@@ -135,7 +135,7 @@ h2.red { color:#ffdfe8; text-shadow:0 0 14px #ff4d6d; }
 
 /* ---------- Main menu: show the canvas backdrop, use the full width ---------- */
 #menu { background:transparent; }
-#menu .panel.menupanel { background:rgba(6,10,28,.78); width:min(94vw,900px); max-width:min(94vw,900px); padding:18px 30px; }
+#menu .panel.menupanel { background:rgba(6,10,28,.78); width:min(94vw,900px); max-width:min(94vw,900px); padding:18px 30px; position:relative; }
 .menupanel h1 { font-size:clamp(28px,5.5vw,44px); letter-spacing:6px; }
 .menupanel .tag { margin:2px 0 12px; font-size:11px; }
 .menugrid { display:flex; align-items:center; justify-content:center; gap:40px; }
@@ -152,3 +152,27 @@ h2.red { color:#ffdfe8; text-shadow:0 0 14px #ff4d6d; }
   .menugrid .howto { font-size:14px; }
   .menustats { text-align:center; }
 }
+
+/* ---------- Dev console ---------- */
+#devlogo { position:absolute; right:12px; bottom:8px; font-size:10px; letter-spacing:1px;
+  color:rgba(143,216,255,.35); cursor:pointer; padding:8px 6px; }
+#devlogo:active { color:rgba(143,216,255,.7); }
+#devbtn.devbtn { border-color:rgba(255,77,217,.55); color:#ff9eef; }
+.devpanel { width:min(96vw,920px); max-width:min(96vw,920px); max-height:94vh;
+  padding:14px 20px 12px; text-align:left; }
+.devpanel h2 { text-align:center; }
+.devpanel .tag { text-align:center; }
+.devsec { margin:12px 0 6px; font-size:12px; letter-spacing:4px; color:#b2ff59; font-weight:800; }
+.devtype { margin-top:8px; font-size:11px; letter-spacing:2px; color:#8fd8ff; font-weight:700; }
+.devgrid { display:grid; gap:6px; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); }
+.devrow { display:flex; align-items:center; gap:6px; background:rgba(10,18,40,.85);
+  border:1px solid rgba(178,255,89,.25); border-radius:8px; padding:5px 8px; }
+.devrow label { flex:1; font-size:11px; color:#cfe9ff; letter-spacing:.5px; min-width:0; }
+.devrow .v { min-width:54px; text-align:center; font-size:12px; font-weight:700; color:#b2ff59;
+  font-variant-numeric:tabular-nums; }
+.devrow button { width:24px; height:24px; flex:0 0 auto; border-radius:6px;
+  border:1px solid rgba(178,255,89,.4); background:rgba(178,255,89,.08);
+  color:#b2ff59; font-size:14px; font-weight:800; cursor:pointer; line-height:1; }
+.devrow button:active { background:rgba(178,255,89,.25); }
+.devactions { display:flex; gap:8px; margin-top:14px; }
+.devactions .bigbtn, .devactions .ghostbtn { margin:0; padding:10px; font-size:13px; }
