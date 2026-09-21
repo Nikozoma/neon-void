@@ -30,6 +30,7 @@
       <div id="timer">0:00</div>
       <div id="score">0</div>
       <div id="bossbar" class="hidden"><div id="bossfill"></div><span>WARDEN</span></div>
+      <div id="storyline" class="hidden"></div>
     </div>
     <div id="topright">
       <button id="mutebtn" class="iconbtn" aria-label="mute">♪</button>
@@ -56,6 +57,7 @@
         <div class="menustats">
           <p id="ptsline" class="pts"></p>
           <p id="bestline" class="best"></p>
+          <p id="badgeline"></p>
         </div>
       </div>
       <div id="devlogo"></div>
@@ -146,6 +148,17 @@
       <p id="newbest" class="best hidden">★ NEW BEST ★</p>
       <button id="retrybtn" class="bigbtn">RETRY</button>
       <button id="menubtn" class="ghostbtn">MAIN MENU</button>
+    </div>
+  </div>
+
+  <!-- Storyline complete -->
+  <div id="storydone" class="overlay hidden">
+    <div class="panel">
+      <h2 id="storydtitle" class="violet">VOID SEALED</h2>
+      <p id="storydtag" class="tag"></p>
+      <div id="storydstats"></div>
+      <button id="storycontinue" class="bigbtn green">CONTINUE — VOIDSTORM</button>
+      <button id="storymenu" class="ghostbtn red">MAIN MENU</button>
     </div>
   </div>
 
