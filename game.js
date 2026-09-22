@@ -2355,7 +2355,7 @@ function liveSkipToBoss(n) {
     el.bossbar.classList.add('hidden');
   }
   // seal earlier voids so the counter stays consistent
-  let sealed = 0;
+  let sealed = st.voids.filter(v => v.sealed).length;
   for (const v of st.voids) {
     if (sealed >= n - 1) break;
     if (!v.sealed) { sealVoid(v); sealed++; }
