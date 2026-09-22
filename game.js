@@ -65,6 +65,7 @@ const CFG = {
   voidPullE: 650,               // enemy pull acceleration at the rim (px/s^2)
   voidPullP: 600,               // player pull acceleration at the rim (px/s^2)
   voidKillK: 0.9,               // anything within voidR * this dies
+  voidSpecialCh: 0.12,          // chance a void spawn is a special void enemy (shard/spark/threadling/siphon)
   webSlowK: 0.5,                // weaver webs: player speed multiplier inside
   webLife: 12,                  // weaver web lifetime (s)
 };
@@ -81,7 +82,7 @@ const DEVPARAMS = ['maxEnemies', 'spawnBase', 'spawnDecay', 'spawnMin', 'batchEv
   'eliteEvery', 'firstElite', 'bossEvery', 'firstBoss', 'eliteNukeCh', 'eliteHealCh',
   'dropDroneCh', 'dropAegisCh', 'dropShieldCh', 'dropNukeCh', 'dropPhaseCh',
   'multStep', 'multCap', 'droneTime', 'forceTime', 'phaseTime', 'phaseBoomR', 'phaseBoomDmg',
-  'voidPullR', 'voidPullE', 'voidPullP', 'voidKillK', 'webSlowK', 'webLife'];
+  'voidPullR', 'voidPullE', 'voidPullP', 'voidKillK', 'voidSpecialCh', 'webSlowK', 'webLife'];
 const CFG_DEFAULTS = {};
 DEVPARAMS.forEach((k) => { CFG_DEFAULTS[k] = CFG[k]; });
 
@@ -587,7 +588,6 @@ function newPlayer() {
     fireT: 0,
     phase: 0, phaseT: 0,      // phase consumable charges + active timer
     forceT: 0,                // force field invulnerability timer
-    leechT: 0, leechFrom: null, // leech tether drain timer + source boss
     webbed: false,              // inside a weaver web
     drone: null,              // weapon drone {w, lvl, t, ...} or null
     faceX: 1, faceY: 0, aimX: 1, aimY: 0,
@@ -962,7 +962,7 @@ const ETYPES = {
   spitter:{ hp: 40,  spd: 120, dmg: 10, r: 15, score: 30, xp: 3, color: COL.spitter, shape: 4 },
   tank:   { hp: 120, spd: 72,  dmg: 20, r: 24, score: 60, xp: 6, color: COL.tank,    shape: 6 },
   // ---- boss minions (spawned by bosses, never by the regular spawner) ----
-  shard:  { hp: 70,  spd: 0,   dmg: 14, r: 12, score: 40, xp: 3, color: '#7df9ff', shape: 6 },
+  shard:  { hp: 280, spd: 72,  dmg: 14, r: 14, score: 65, xp: 4, color: '#7df9ff', shape: 6 },
   spark:  { hp: 26,  spd: 205, dmg: 10, r: 11, score: 25, xp: 2, color: '#ffb347', shape: 3 },
   threadling: { hp: 45, spd: 150, dmg: 10, r: 12, score: 35, xp: 3, color: '#46f6ff', shape: 5 },
   siphon: { hp: 30,  spd: 215, dmg: 6,  r: 10, score: 30, xp: 2, color: '#7dff6a', shape: 4 },
@@ -1058,7 +1058,12 @@ function updateSpawns(dt) {
         // void war: alternate — regulars pour in from the map edges,
         // void-touched crawl out of the open voids themselves
         if (i % 2 === 1) {
-          spawnVoidTouched(type, openVoids, false);
+          // a slice of void spawns are the special void enemies (shard/spark/threadling/siphon)
+          if (Math.random() < CFG.voidSpecialCh) {
+            spawnVoidTouched(pick(VOID_SPECIAL), openVoids, false);
+          } else {
+            spawnVoidTouched(type, openVoids, false);
+          }
         } else {
           const pos = spawnEdge();
           spawnEnemy(type, pos.x, pos.y, false, false);
@@ -1142,8 +1147,11 @@ function spawnEdge() {
 
 /* ---------------- bosses: one per void, each a dedicated arena fight ----------------
    While a boss is out, regular spawning stops — the boss brings its own minions
-   and gimmicks instead. Order: WARDEN -> SPLITTER -> WEAVER -> LEECH -> HERALD. */
-const BOSS_ORDER = ['warden', 'splitter', 'weaver', 'leech', 'herald'];
+   and gimmicks instead. Order: WARDEN -> SPLITTER -> WEAVER -> ABYSS -> HERALD. */
+const BOSS_ORDER = ['warden', 'splitter', 'weaver', 'abyss', 'herald'];
+/* the four special void enemies — they crawl out of open voids on their own,
+   and the bosses are built as their upgraded kin, not their containers */
+const VOID_SPECIAL = ['shard', 'spark', 'threadling', 'siphon'];
 const BOSS_DEFS = {
   warden:   { name: 'WARDEN',   color: '#ff4d6e', hpMul: 1.00, score: 1500, spd: 95,  rr: 46, shape: 8,
               tag: 'BREAK ITS GUARD' },
@@ -1151,8 +1159,8 @@ const BOSS_DEFS = {
               tag: 'CULL THE SHEDDINGS' },
   weaver:   { name: 'WEAVER',   color: '#46f6ff', hpMul: 0.65, score: 2000, spd: 150, rr: 36, shape: 5,
               tag: 'MIND THE WEBS' },
-  leech:    { name: 'LEECH',    color: '#7dff6a', hpMul: 0.90, score: 2200, spd: 110, rr: 42, shape: 6,
-              tag: 'PROTECT YOUR STREAK' },
+  abyss:    { name: 'ABYSS',    color: '#6a7bff', hpMul: 0.95, score: 2300, spd: 85,  rr: 48, shape: 9,
+              tag: 'DEFY THE PULL' },
   herald:   { name: 'HERALD',   color: '#c07bff', hpMul: 1.15, score: 2500, spd: 80,  rr: 48, shape: 8,
               tag: 'SILENCE IT QUICKLY' },
 };
@@ -1214,7 +1222,7 @@ function bossOnSpawn(b) {
     warden:   { type: 'shard', n: 3 },
     splitter: { type: 'spark', n: 2 },
     weaver:   { type: 'threadling', n: 2 },
-    leech:    { type: 'siphon', n: 2 },
+    abyss:    { type: null, n: 0 }, // the abyss fights alone — the void itself is its weapon
     herald:   { type: null, n: 0 },
   }[k] || { type: null, n: 0 };
   for (let i = 0; i < setup.n; i++) {
@@ -1266,9 +1274,39 @@ function bossFight(b, dt, nx, ny, d) {
       spawnParts(b.x, b.y, b.color, 10, 160, 0.4, 3);
     }
     if (b.atkT <= 0) { weaverAttack(b); b.atkT = 2.2; }
-  } else if (k === 'leech') {
-    mx = nx * b.spd * 0.8; my = ny * b.spd * 0.8;
-    if (b.atkT <= 0) { leechAttack(b); b.atkT = 3.0; }
+  } else if (k === 'abyss') {
+    // the gravity tyrant: drifts to mid-range, then weaponizes the voids themselves
+    const want = 300;
+    const radial = d > want + 60 ? 1 : d < want - 60 ? -0.6 : 0;
+    mx = nx * radial * b.spd * 0.6; my = ny * radial * b.spd * 0.6;
+    if (b.surgeT > 0) {
+      // telegraph: the air goes still before the pull
+      b.surgeT -= dt; b.flash = 0.05;
+      if (b.surgeT <= 0) { b.surgeOn = 1.6; addShake(0.35); AU.boom(false); }
+    } else if (b.surgeOn > 0) {
+      // GRAVITY SURGE: drag the player toward the nearest open void
+      b.surgeOn -= dt; b.flash = 0.05;
+      const v = nearestOpenVoid(p.x, p.y);
+      if (v && p.alive) {
+        const dx = v.x - p.x, dy = v.y - p.y, dd = Math.hypot(dx, dy) || 1;
+        p.vx += dx / dd * 950 * dt; p.vy += dy / dd * 950 * dt;
+        if (Math.random() < 0.35) spawnParts(p.x, p.y, b.color, 1, 60, 0.25, 2);
+      }
+    }
+    if (b.slamT > 0) {
+      b.slamT -= dt;
+      if (b.slamT <= 0) {
+        G.shocks.push({ x: b.x, y: b.y, r: 30, maxR: 260, life: 0.45, maxLife: 0.45, color: b.color });
+        const dd = Math.hypot(p.x - b.x, p.y - b.y);
+        if (dd < 250 && p.alive) {
+          damagePlayer(22, b.x, b.y);
+          const ka = Math.atan2(p.y - b.y, p.x - b.x);
+          p.vx += Math.cos(ka) * 520; p.vy += Math.sin(ka) * 520;
+        }
+        AU.boom(false); addShake(0.4);
+      }
+    }
+    if (b.atkT <= 0) { abyssAttack(b); b.atkT = 3.2; }
   } else if (k === 'herald') {
     // anchors near its void, keeps ~520 from the player
     let ax = 0, ay = 0;
@@ -1396,37 +1434,44 @@ function weaverAttack(b) {
   }
 }
 
-function leechAttack(b) {
+function nearestOpenVoid(x, y) {
+  const st = G.story;
+  if (!st || st.phase === 'off') return null;
+  let best = null, bd = 1e9;
+  for (const v of st.voids) {
+    if (v.sealed || v.open < 0.5) continue;
+    const d = Math.hypot(v.x - x, v.y - y);
+    if (d < bd) { bd = d; best = v; }
+  }
+  return best;
+}
+
+function abyssAttack(b) {
   const p = G.player;
   const kind = b.atkKind % 3;
   b.atkKind++;
   if (kind === 0) {
-    // tether harpoon: slow, latches the kill-streak (no direct damage)
-    const a = Math.atan2(p.y - b.y, p.x - b.x);
-    G.ebullets.push({
-      x: b.x, y: b.y, vx: Math.cos(a) * 210, vy: Math.sin(a) * 210,
-      dmg: 0, r: 9, life: 4, t: 0, tether: true, from: b,
-    });
-    spawnParts(b.x, b.y, b.color, 8, 180, 0.3, 3);
-    AU.shoot();
+    // GRAVITY SURGE: 1.2s telegraph, then the nearest void drags the player in
+    b.surgeT = 1.2; b.surgeOn = 0;
+    addFloat(b.x, b.y - 70, 'GRAVITY SURGE', b.color, 18);
+    spawnParts(b.x, b.y, b.color, 14, 220, 0.5, 4);
+    AU.warn();
   } else if (kind === 1) {
-    // release siphons
-    let n = bossMinions(b);
-    for (let i = 0; i < 3 && n < 6; i++, n++) {
-      const a = rand(0, TAU);
-      spawnMinion('siphon', b, b.x + Math.cos(a) * 80, b.y + Math.sin(a) * 80);
+    // orb volley: 5 aimed gravity orbs
+    const a = Math.atan2(p.y - b.y, p.x - b.x);
+    for (let i = -2; i <= 2; i++) {
+      const aa = a + i * 0.14;
+      G.ebullets.push({
+        x: b.x, y: b.y, vx: Math.cos(aa) * 265, vy: Math.sin(aa) * 265,
+        dmg: b.dmg, r: 10, life: 5, t: 0, color: b.color,
+      });
     }
-    spawnParts(b.x, b.y, b.color, 12, 200, 0.5, 4);
+    AU.shoot();
   } else {
-    // drain pulse
-    const d = Math.hypot(p.x - b.x, p.y - b.y);
-    G.shocks.push({ x: b.x, y: b.y, r: 30, maxR: 280, life: 0.5, maxLife: 0.5, color: '#7dff6a' });
-    if (d < 280 && p.alive) {
-      G.mult = Math.max(1, G.mult - 0.8);
-      damagePlayer(b.dmg * 0.4, b.x, b.y);
-      addFloat(p.x, p.y - 30, 'DRAINED', '#7dff6a', 17);
-    }
-    AU.boom(false);
+    // SEISMIC SLAM: telegraphed shockwave, knockback if you're close
+    b.slamT = 0.9;
+    addFloat(b.x, b.y - 70, 'SEISMIC SLAM', b.color, 18);
+    AU.warn();
   }
 }
 
@@ -1552,7 +1597,6 @@ function killEnemy(e) {
       }
     }
     const pl = G.player;
-    if (pl.leechFrom === e) { pl.leechT = 0; pl.leechFrom = null; }
     if (e.storyBoss && G.story && G.story.phase !== 'off') storyBossDown(e);
   } else if (e.elite) {
     for (let i = 0; i < 5; i++) dropShard(e.x, e.y, e.xp / 5);
@@ -2118,21 +2162,21 @@ const ENEMY_INFO = [
   { id: 'voidt', name: 'VOID-TOUCHED', ico: '◈', color: '#b14dff',
     desc: 'Enemies crawling out of open voids: 1.45× HP, slightly faster, 2× score. Violet glow.' },
   { id: 'shard', name: 'AEGIS SHARD', ico: '⬢', color: '#7df9ff',
-    desc: "WARDEN's orbiting guard. Soaks your bullets with its body — clear the shards to hit the boss." },
+    desc: 'Crystalline void-spawn. Slow but massively armored — bring real DPS. The WARDEN commands shards as its guard.' },
   { id: 'spark', name: 'SPARK', ico: '▲', color: '#ffb347',
-    desc: 'Shed by the SPLITTER. Fast jittery chaser — and the boss bursts into more when it dies.' },
+    desc: 'Volatile void-spawn. Fast, jittery chaser that pours out of open voids. The SPLITTER sheds them.' },
   { id: 'threadling', name: 'THREADLING', ico: '⬟', color: '#46f6ff',
-    desc: "WEAVER's brood. Slow chasers that lay their own slowing webs." },
+    desc: 'Void-spawn. Slow drifter that lays slowing webs around the voids. The WEAVER is their broodmother.' },
   { id: 'siphon', name: 'SIPHON', ico: '◆', color: '#7dff6a',
-    desc: "LEECH's spawn. Latches onto you for 3s, draining your kill-streak. Max 3 at once." },
+    desc: 'Parasitic void-spawn. Latches onto you for ~3s, draining your kill-streak and hull. Max 3 at once.' },
   { id: 'b-warden', name: 'BOSS: WARDEN', ico: '✕', color: '#ff4d6e',
     desc: 'First of the five. Shard-guarded juggernaut: radial bursts, aimed fans, telegraphed dash.' },
   { id: 'b-splitter', name: 'BOSS: SPLITTER', ico: '✸', color: '#ffb347',
     desc: 'Swollen mass that sheds sparks, lobs heavy globs, and bursts apart into mites on death.' },
   { id: 'b-weaver', name: 'BOSS: WEAVER', ico: '❋', color: '#46f6ff',
     desc: 'Fast and fragile. Webs the arena floor (you move at half speed inside), darts around you.' },
-  { id: 'b-leech', name: 'BOSS: LEECH', ico: '◉', color: '#7dff6a',
-    desc: 'Anti-greed horror: tether harpoons and latching siphons drain your kill-streak. Phase/force snaps tethers.' },
+  { id: 'b-abyss', name: 'BOSS: ABYSS', ico: '◎', color: '#6a7bff',
+    desc: 'The gravity tyrant. Telegraphs surges that drag you toward open voids, volleys aimed orbs, slams the arena. No minions — the void itself is its weapon.' },
   { id: 'b-herald', name: 'BOSS: HERALD', ico: '♛', color: '#c07bff',
     desc: 'Anchors to its void and summons void-touched endlessly. Kill it fast — or drown in adds.' },
 ];
@@ -2307,7 +2351,6 @@ function liveSkipToBoss(n) {
       if (G.enemies[j].bossRef === old) G.enemies.splice(j, 1);
     }
     const pl = G.player;
-    if (pl.leechFrom === old) { pl.leechT = 0; pl.leechFrom = null; }
     G.boss = null;
     el.bossbar.classList.add('hidden');
   }
@@ -2414,7 +2457,7 @@ function renderLiveOps() {
   liveBtn(g, 'SPAWN WARDEN', () => liveSpawnBoss('warden'));
   liveBtn(g, 'SPAWN SPLITTER', () => liveSpawnBoss('splitter'));
   liveBtn(g, 'SPAWN WEAVER', () => liveSpawnBoss('weaver'));
-  liveBtn(g, 'SPAWN LEECH', () => liveSpawnBoss('leech'));
+  liveBtn(g, 'SPAWN ABYSS', () => liveSpawnBoss('abyss'));
   liveBtn(g, 'SPAWN HERALD', () => liveSpawnBoss('herald'));
   liveBtn(g, 'SPAWN ELITE NOW', liveSpawnElite);
   liveBtn(g, 'SPAWN MITE', () => liveSpawnType('mite'));
@@ -2648,6 +2691,7 @@ function renderDev() {
   num(g, 'Kill zone × voidR', CFG, 'voidKillK', 0.05, 0, 1.5, 2, 'voidkillk');
   num(g, 'Web slow ×', CFG, 'webSlowK', 0.05, 0.1, 1, 2, 'webslowk');
   num(g, 'Web lifetime', CFG, 'webLife', 1, 1, 60, 0, 'weblife');
+  num(g, 'Special void-foe ×', CFG, 'voidSpecialCh', 0.01, 0, 1, 2, 'voidspecialch');
 
   // ---- player base (next run) ----
   b.appendChild(devSection('PLAYER BASE · applies on run start'));
@@ -3236,17 +3280,6 @@ function updatePlayer(dt, inp) {
     p.phaseT -= dt;
     if (p.phaseT <= 0) phaseImplode();
   }
-  // leech tether: drains the kill-streak while attached; force/phase snaps it
-  if (p.leechT > 0) {
-    if (p.forceT > 0 || p.phaseT > 0) { p.leechT = 0; p.leechFrom = null; }
-    else {
-      p.leechT -= dt;
-      G.mult = Math.max(1, Math.round((G.mult - 0.45 * dt) * 100) / 100);
-      p.hp -= 3 * dt;
-      if (p.hp <= 0 && p.alive) damagePlayer(99999, p.x, p.y);
-      if (p.leechT <= 0) p.leechFrom = null;
-    }
-  }
   // phase activation (keyboard E / touch ◈ button)
   if (IN.phaseQueued) {
     IN.phaseQueued = false;
@@ -3343,7 +3376,7 @@ function minionMove(e, dt, nx, ny, d) {
       e.ang = (e.ang || 0) + dt * 1.9;
       e.x = b.x + Math.cos(e.ang) * 105;
       e.y = b.y + Math.sin(e.ang) * 105;
-    } else { mx = nx * 120; my = ny * 120; }
+    } else { mx = nx * e.spd; my = ny * e.spd; } // no boss: void-spawned or orphaned shard chases
   } else if (e.type === 'spark') {
     const wob = Math.sin(e.t * 7) * 0.4;
     mx = (nx + -ny * wob) * e.spd; my = (ny + nx * wob) * e.spd;
@@ -3491,18 +3524,8 @@ function updateEBullets(dt) {
     if (p.alive) {
       const rr = b.r + p.r * 0.8;
       if (dist2(b.x, b.y, p.x, p.y) < rr * rr) {
-        if (b.tether) {
-          // leech harpoon: no direct damage, latches the kill-streak
-          if (p.forceT <= 0 && p.phaseT <= 0) {
-            p.leechT = 3; p.leechFrom = b.from || null;
-            addFloat(p.x, p.y - 30, 'TETHERED', '#7dff6a', 16);
-            AU.hit();
-          }
-          G.ebullets.splice(i, 1);
-        } else {
-          damagePlayer(b.dmg, b.x - b.vx * 0.05, b.y - b.vy * 0.05);
-          G.ebullets.splice(i, 1);
-        }
+        damagePlayer(b.dmg, b.x - b.vx * 0.05, b.y - b.vy * 0.05);
+        G.ebullets.splice(i, 1);
       }
     }
   }
@@ -3958,19 +3981,6 @@ function draw() {
     ctx.beginPath(); ctx.arc(0, 0, w.r * 0.28, 0, TAU); ctx.stroke();
     ctx.restore();
   }
-  // leech tether
-  const _pl = G.player;
-  if (_pl.leechT > 0 && _pl.leechFrom && G.enemies.includes(_pl.leechFrom)) {
-    ctx.save();
-    ctx.strokeStyle = '#7dff6a'; ctx.lineWidth = 3;
-    ctx.globalAlpha = 0.55 + Math.sin(tt * 14) * 0.25;
-    ctx.setLineDash([10, 6]);
-    ctx.beginPath();
-    ctx.moveTo(_pl.leechFrom.x, _pl.leechFrom.y);
-    ctx.lineTo(_pl.x, _pl.y);
-    ctx.stroke();
-    ctx.restore();
-  }
   // enemies
   for (const e of G.enemies) {
     ctx.save();
@@ -3987,8 +3997,48 @@ function draw() {
       ctx.globalAlpha = 0.85 + Math.sin(tt * 8) * 0.15;
       ctx.beginPath(); ctx.arc(0, 0, e.r * 0.2, 0, TAU); ctx.fill();
       ctx.globalAlpha = 1;
+      if (e.bossKind === 'abyss') {
+        ctx.save();
+        ctx.rotate(-e.rot * 1.7); // match inner shell frame
+        // orbiting debris dots
+        ctx.fillStyle = col;
+        for (let i = 0; i < 3; i++) {
+          const an = tt * 2.2 + (i / 3) * TAU;
+          ctx.beginPath(); ctx.arc(Math.cos(an) * e.r * 1.35, Math.sin(an) * e.r * 1.35, 4, 0, TAU); ctx.fill();
+        }
+        // gravity surge telegraph: contracting ring while winding up
+        if (e.surgeT > 0) {
+          const k = 1 - e.surgeT / 1.2;
+          ctx.strokeStyle = col; ctx.lineWidth = 3;
+          ctx.globalAlpha = 0.4 + 0.5 * k;
+          ctx.setLineDash([12, 8]);
+          ctx.beginPath(); ctx.arc(0, 0, e.r * (3 - 1.6 * k), 0, TAU); ctx.stroke();
+          ctx.setLineDash([]);
+        }
+        // active surge: inward streaks
+        if (e.surgeOn > 0) {
+          ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+          ctx.globalAlpha = 0.5;
+          for (let i = 0; i < 8; i++) {
+            const an = (i / 8) * TAU + tt * 6;
+            const r0 = e.r * (1.8 - (tt * 3 % 1) * 0.8);
+            ctx.beginPath(); ctx.moveTo(Math.cos(an) * r0, Math.sin(an) * r0);
+            ctx.lineTo(Math.cos(an) * e.r * 0.9, Math.sin(an) * e.r * 0.9); ctx.stroke();
+          }
+        }
+        // seismic slam telegraph: dashed ring at blast radius
+        if (e.slamT > 0) {
+          ctx.strokeStyle = '#ff5a5a'; ctx.lineWidth = 3;
+          ctx.globalAlpha = 0.35 + 0.45 * Math.abs(Math.sin(tt * 10));
+          ctx.setLineDash([16, 10]);
+          ctx.beginPath(); ctx.arc(0, 0, 250, 0, TAU); ctx.stroke();
+          ctx.setLineDash([]);
+        }
+        ctx.restore();
+        ctx.globalAlpha = 1;
+      }
       // kind glyph
-      const glyph = { warden: '✕', splitter: '✸', weaver: '❋', leech: '◉', herald: '♛' }[e.bossKind];
+      const glyph = { warden: '✕', splitter: '✸', weaver: '❋', abyss: '◎', herald: '♛' }[e.bossKind];
       if (glyph) {
         ctx.save();
         ctx.rotate(e.rot * 0.7); // cancel accumulated spin
