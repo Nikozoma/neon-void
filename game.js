@@ -1831,10 +1831,14 @@ function updateHUD() {
   // storyline status line
   const st = G.story;
   if (st && st.phase === 'calm') {
-    el.storyline.classList.remove('hidden');
     const left = STORY.tearAt - G.time;
-    el.storyline.textContent = '◈ RUPTURE IN ' + fmtTime(Math.max(0, left));
-    el.storyline.classList.toggle('soon', left < 15);
+    if (left <= 10) { // surprise: countdown only appears in the last 10s
+      el.storyline.classList.remove('hidden');
+      el.storyline.textContent = '◈ RUPTURE IN ' + fmtTime(Math.max(0, left));
+      el.storyline.classList.add('soon');
+    } else {
+      el.storyline.classList.add('hidden');
+    }
   } else if (st && (st.phase === 'voidwar' || st.phase === 'rupture')) {
     el.storyline.classList.remove('hidden');
     el.storyline.textContent = '◈ VOIDS SEALED ' + st.bossesDown + '/' + STORY.bossesToClose;
