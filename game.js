@@ -14,7 +14,7 @@ const dist2 = (ax, ay, bx, by) => { const dx = ax - bx, dy = ay - by; return dx 
 const pick = (arr) => arr[(Math.random() * arr.length) | 0];
 
 /* single source of truth for the game version — shown on the menu badge */
-const GAME_VERSION = '3.6';
+const GAME_VERSION = '3.7';
 
 /* ---------------- config ---------------- */
 const CFG = {
@@ -22,7 +22,7 @@ const CFG = {
   maxEnemies: 90,
   maxParts: 340,
   maxFloats: 40,
-  world: { w: 2200, h: 1500 },  // arena is ~2.5-3x a phone viewport
+  world: { w: 2500, h: 1800 },  // post-rupture arena — roomy enough to maneuver around the voids
   camZoom: 0.85,                // zoomed out slightly
   // ---- dev-tunable pacing params (functions below derive from these) ----
   spawnBase: 1.30,              // spawn interval at t=0 (s)
@@ -60,6 +60,13 @@ const CFG = {
   phaseTime: 10,                // phase intangibility duration (s)
   phaseBoomR: 230,              // phase-collapse implosion radius
   phaseBoomDmg: 1500,           // phase-collapse damage to boss
+  // ---- void hazards: open voids pull things in like black holes ----
+  voidPullR: 300,               // gravity well radius (px)
+  voidPullE: 650,               // enemy pull acceleration at the rim (px/s^2)
+  voidPullP: 600,               // player pull acceleration at the rim (px/s^2)
+  voidKillK: 0.9,               // anything within voidR * this dies
+  webSlowK: 0.5,                // weaver webs: player speed multiplier inside
+  webLife: 12,                  // weaver web lifetime (s)
 };
 CFG.xpNeed = (lvl) => Math.round(CFG.xpBase * Math.pow(lvl, CFG.xpPow));
 CFG.spawnInterval = (t) => clamp(CFG.spawnBase - t * CFG.spawnDecay, CFG.spawnMin, CFG.spawnBase);
@@ -73,7 +80,8 @@ const DEVPARAMS = ['maxEnemies', 'spawnBase', 'spawnDecay', 'spawnMin', 'batchEv
   'loopSpawnInt', 'loopSpawnBatch', 'loopFoeHp', 'loopFoeDmg', 'loopBossHp',
   'eliteEvery', 'firstElite', 'bossEvery', 'firstBoss', 'eliteNukeCh', 'eliteHealCh',
   'dropDroneCh', 'dropAegisCh', 'dropShieldCh', 'dropNukeCh', 'dropPhaseCh',
-  'multStep', 'multCap', 'droneTime', 'forceTime', 'phaseTime', 'phaseBoomR', 'phaseBoomDmg'];
+  'multStep', 'multCap', 'droneTime', 'forceTime', 'phaseTime', 'phaseBoomR', 'phaseBoomDmg',
+  'voidPullR', 'voidPullE', 'voidPullP', 'voidKillK', 'webSlowK', 'webLife'];
 const CFG_DEFAULTS = {};
 DEVPARAMS.forEach((k) => { CFG_DEFAULTS[k] = CFG[k]; });
 
@@ -92,7 +100,7 @@ const STORY = {
   calmCracks: 18,       // decorative pre-void cracks (visual only, NOT tied to void count), spread across the big map
   crackSpread: 40,      // crack size (world px) — tiny distant fractures
   smallW: 1200, smallH: 800,   // calm-phase arena — centered inside the big map
-  bigW: 2200, bigH: 1500,      // post-rupture arena (the full world, always)
+  bigW: 2500, bigH: 1800,      // post-rupture arena (the full world, always)
 };
 const STORY_DEFAULTS = Object.assign({}, STORY);
 
@@ -408,7 +416,7 @@ const G = {
   trauma: 0, hitstop: 0,
   player: null,
   bullets: [], ebullets: [],
-  enemies: [], parts: [], pickups: [], floats: [], shocks: [],
+  enemies: [], parts: [], pickups: [], floats: [], shocks: [], webs: [],
   spawnT: 0, eliteT: 0, bossT: 0, boss: null, bossCount: 0,
   upgrades: {},   // id -> stacks
   story: null,    // storyline state (see resetGame)
@@ -579,6 +587,8 @@ function newPlayer() {
     fireT: 0,
     phase: 0, phaseT: 0,      // phase consumable charges + active timer
     forceT: 0,                // force field invulnerability timer
+    leechT: 0, leechFrom: null, // leech tether drain timer + source boss
+    webbed: false,              // inside a weaver web
     drone: null,              // weapon drone {w, lvl, t, ...} or null
     faceX: 1, faceY: 0, aimX: 1, aimY: 0,
     inv: 0, alive: true,
@@ -594,7 +604,7 @@ function resetGame() {
   G.player = newPlayer();
   G.bullets.length = 0; G.ebullets.length = 0;
   G.enemies.length = 0; G.parts.length = 0;
-  G.pickups.length = 0; G.floats.length = 0; G.shocks.length = 0;
+  G.pickups.length = 0; G.floats.length = 0; G.shocks.length = 0; G.webs.length = 0;
   G.flash = 0;
   G.spawnT = 1.2; G.eliteT = CFG.firstElite; G.bossT = CFG.firstBoss;
   G.boss = null; G.bossCount = 0; G.upgrades = {};
@@ -781,6 +791,75 @@ function phaseImplode() {
   toast('◈ PHASE COLLAPSE');
 }
 
+/* ---------------- VOID HAZARDS — black-hole gravity wells ----------------
+   Open voids drag enemies in (kite them to their death) and tug the player
+   gently: standing still next to one will suck you in, but normal movement
+   overpowers it. Anything crossing the event horizon dies. Bosses immune. */
+function voidKill(e) {
+  const idx = G.enemies.indexOf(e);
+  if (idx < 0) return;
+  G.enemies.splice(idx, 1);
+  G.kills++;
+  G.mult = Math.min(CFG.multCap, Math.round((G.mult + CFG.multStep) * 10) / 10);
+  G.score += e.score * G.mult;
+  spawnParts(e.x, e.y, '#b14dff', 16, 240, 0.5, 4);
+  addFloat(e.x, e.y - 20, 'VOID CLAIMED', '#b14dff', 15);
+  AU.boom(false);
+}
+function openVoids() {
+  const st = G.story;
+  if (!st || st.phase !== 'voidwar') return [];
+  return st.voids.filter(v => !v.sealed && v.open > 0.5);
+}
+function updateVoids(dt) {
+  const voids = openVoids();
+  if (!voids.length) return;
+  const p = G.player;
+  const PR = CFG.voidPullR;
+  for (const v of voids) {
+    const vr = v.r * v.open;           // current visual radius
+    const killR = vr * CFG.voidKillK;  // event horizon
+    // --- enemies ---
+    for (let i = G.enemies.length - 1; i >= 0; i--) {
+      const e = G.enemies[i];
+      if (e.boss || e.noVoidPull) continue; // bosses and their minions anchor themselves
+      if (e.voidGrace > 0) { e.voidGrace -= dt; continue; } // fresh spawns crawl out first
+      const dx = v.x - e.x, dy = v.y - e.y;
+      const d = Math.hypot(dx, dy);
+      if (d < killR) { voidKill(e); continue; }
+      if (d < PR && d > 1) {
+        const pull = CFG.voidPullE * (1 - d / PR);
+        e.vx += (dx / d) * pull * dt;
+        e.vy += (dy / d) * pull * dt;
+      }
+    }
+    // --- player: gentle tug, lethal inside ---
+    if (p.alive) {
+      const dx = v.x - p.x, dy = v.y - p.y;
+      const d = Math.hypot(dx, dy);
+      if (d < killR) {
+        damagePlayer(999999, v.x, v.y); // routed through the normal pipeline: shields / i-frames / phase all apply
+      } else if (d < PR && d > 1) {
+        const pull = CFG.voidPullP * (1 - d / PR);
+        p.vx += (dx / d) * pull * dt;
+        p.vy += (dy / d) * pull * dt;
+      }
+    }
+  }
+}
+/* weaver webs: slowing zones laid by the WEAVER and its threadlings */
+function layWeb(x, y, r, life) {
+  if (G.webs.length > 24) G.webs.shift();
+  G.webs.push({ x, y, r: r || 90, life: life || CFG.webLife, maxLife: life || CFG.webLife, seed: rand(0, TAU) });
+}
+function updateWebs(dt) {
+  for (let i = G.webs.length - 1; i >= 0; i--) {
+    const w = G.webs[i];
+    w.life -= dt;
+    if (w.life <= 0) G.webs.splice(i, 1);
+  }
+}
+
 let pickupStreak = 0, pickupStreakT = 0;
 function updatePickups(dt) {
   const p = G.player;
@@ -882,6 +961,11 @@ const ETYPES = {
   dasher: { hp: 34,  spd: 150, dmg: 12, r: 14, score: 20, xp: 2, color: COL.dasher,  shape: 4 },
   spitter:{ hp: 40,  spd: 120, dmg: 10, r: 15, score: 30, xp: 3, color: COL.spitter, shape: 4 },
   tank:   { hp: 120, spd: 72,  dmg: 20, r: 24, score: 60, xp: 6, color: COL.tank,    shape: 6 },
+  // ---- boss minions (spawned by bosses, never by the regular spawner) ----
+  shard:  { hp: 70,  spd: 0,   dmg: 14, r: 12, score: 40, xp: 3, color: '#7df9ff', shape: 6 },
+  spark:  { hp: 26,  spd: 205, dmg: 10, r: 11, score: 25, xp: 2, color: '#ffb347', shape: 3 },
+  threadling: { hp: 45, spd: 150, dmg: 10, r: 12, score: 35, xp: 3, color: '#46f6ff', shape: 5 },
+  siphon: { hp: 30,  spd: 215, dmg: 6,  r: 10, score: 30, xp: 2, color: '#7dff6a', shape: 4 },
 };
 const ETYPES_DEFAULTS = JSON.parse(JSON.stringify(ETYPES));
 
@@ -955,7 +1039,8 @@ function updateSpawns(dt) {
   // voidwar opening ramp clock (55% spawn pressure easing to full)
   if (voidwar && !held) st.warT = (st.warT || 0) + dt;
   G.spawnT -= dt;
-  if (G.spawnT <= 0 && G.enemies.length < CFG.maxEnemies && !held) {
+  // boss fights are dedicated arenas: no regular spawns while a boss is out
+  if (G.spawnT <= 0 && G.enemies.length < CFG.maxEnemies && !held && !G.boss) {
     const loop = inStory ? (st.loop | 0) : 0;
     // hard mode: loops >= 1 run a fixed, explicitly tuned cadence (fewer but meaner)
     G.spawnT = loop >= 1 ? CFG.loopSpawnInt : CFG.spawnInterval(t);
@@ -973,8 +1058,7 @@ function updateSpawns(dt) {
         // void war: alternate — regulars pour in from the map edges,
         // void-touched crawl out of the open voids themselves
         if (i % 2 === 1) {
-          const pos = voidSpawnPos(openVoids);
-          spawnEnemy(type, pos.x, pos.y, false, true);
+          spawnVoidTouched(type, openVoids, false);
         } else {
           const pos = spawnEdge();
           spawnEnemy(type, pos.x, pos.y, false, false);
@@ -984,15 +1068,14 @@ function updateSpawns(dt) {
       }
     }
   }
-  // elites — suppressed during the calm before the storm
-  if (t > 50 && !calm && !held) {
+  // elites — suppressed during the calm before the storm, and during boss fights
+  if (t > 50 && !calm && !held && !G.boss) {
     G.eliteT -= dt;
     if (G.eliteT <= 0 && G.enemies.length < CFG.maxEnemies - 4) {
       G.eliteT = CFG.eliteEvery;
       const open = (voidwar && !classicSpawns) ? st.voids.filter(v => !v.sealed && v.open > 0.5) : [];
       if (open.length) {
-        const pos = voidSpawnPos(open);
-        spawnEnemy(pickType(t), pos.x, pos.y, true, true);
+        spawnVoidTouched(pickType(t), open, true);
       } else {
         const pos = spawnRing();
         spawnEnemy(pickType(t), pos.x, pos.y, true);
@@ -1021,7 +1104,22 @@ function updateSpawns(dt) {
   }
 }
 
-/* spawn point at the rim of a random open void */
+/* spawn point at the rim of a random open void — crawls OUT of the gravity well */
+function spawnVoidTouched(type, open, elite) {
+  const v = pick(open);
+  const b = PB();
+  const a = rand(0, TAU), d = v.r * rand(1.3, 1.9);
+  const x = clamp(v.x + Math.cos(a) * d, b.x + 24, b.x + b.w - 24);
+  const y = clamp(v.y + Math.sin(a) * d, b.y + 24, b.y + b.h - 24);
+  const e = spawnEnemy(type, x, y, !!elite, true);
+  // fresh spawns get a grace window + outward shove so the well doesn't claim them
+  e.voidGrace = 1.6;
+  const dd = Math.hypot(x - v.x, y - v.y) || 1;
+  e.vx = (x - v.x) / dd * 320;
+  e.vy = (y - v.y) / dd * 320;
+  return e;
+}
+/* legacy: spawn point at the rim of a random open void */
 function voidSpawnPos(open) {
   const v = pick(open);
   const b = PB();
@@ -1042,37 +1140,160 @@ function spawnEdge() {
   return { x: b.x + b.w - m, y: rand(b.y + m, b.y + b.h - m) };
 }
 
-/* ---------------- boss: WARDEN ---------------- */
-function spawnBoss(x, y) {
+/* ---------------- bosses: one per void, each a dedicated arena fight ----------------
+   While a boss is out, regular spawning stops — the boss brings its own minions
+   and gimmicks instead. Order: WARDEN -> SPLITTER -> WEAVER -> LEECH -> HERALD. */
+const BOSS_ORDER = ['warden', 'splitter', 'weaver', 'leech', 'herald'];
+const BOSS_DEFS = {
+  warden:   { name: 'WARDEN',   color: '#ff4d6e', hpMul: 1.00, score: 1500, spd: 95,  rr: 46, shape: 8,
+              tag: 'BREAK ITS GUARD' },
+  splitter: { name: 'SPLITTER', color: '#ffb347', hpMul: 0.85, score: 1800, spd: 70,  rr: 52, shape: 7,
+              tag: 'CULL THE SHEDDINGS' },
+  weaver:   { name: 'WEAVER',   color: '#46f6ff', hpMul: 0.65, score: 2000, spd: 150, rr: 36, shape: 5,
+              tag: 'MIND THE WEBS' },
+  leech:    { name: 'LEECH',    color: '#7dff6a', hpMul: 0.90, score: 2200, spd: 110, rr: 42, shape: 6,
+              tag: 'PROTECT YOUR STREAK' },
+  herald:   { name: 'HERALD',   color: '#c07bff', hpMul: 1.15, score: 2500, spd: 80,  rr: 48, shape: 8,
+              tag: 'SILENCE IT QUICKLY' },
+};
+function bossKindFor(n) { // n = 1-based boss number
+  return BOSS_ORDER[(Math.max(1, n) - 1) % BOSS_ORDER.length];
+}
+function spawnMinion(type, boss, x, y) {
+  const e = spawnEnemy(type, x, y, false, false);
+  e.minion = true; e.bossRef = boss;
+  e.noVoidPull = true; // the boss's entourage is anchored to it — the well can't claim them
+  return e;
+}
+function bossMinions(b) {
+  let n = 0;
+  for (const e of G.enemies) if (e.bossRef === b) n++;
+  return n;
+}
+function spawnBoss(x, y, kind) {
   const n = G.bossCount;
+  kind = kind || bossKindFor(n);
+  const def = BOSS_DEFS[kind] || BOSS_DEFS.warden;
   const loop = (G.story && G.story.phase !== 'off') ? (G.story.loop | 0) : 0;
   // tuned so a ~33%-progress player needs ~25-35s per boss; hard-mode loops scale up
-  const hp = 13000 * (1 + (n - 1) * 0.35) * (1 + G.time / 600) * Math.pow(CFG.loopBossHp, loop);
+  const hp = 13000 * def.hpMul * (1 + (n - 1) * 0.35) * (1 + G.time / 600) * Math.pow(CFG.loopBossHp, loop);
   const pos = (x === undefined) ? spawnRing(120) : { x, y };
   const b = {
-    type: 'boss', boss: true,
+    type: 'boss', boss: true, bossKind: kind,
     storyBoss: false, voidRef: null, // storyline: the void this boss emerged from
     x: pos.x, y: pos.y, vx: 0, vy: 0,
     hp, maxhp: hp,
-    spd: 95, dmg: 24 * CFG.dmgMul(G.time) * Math.pow(CFG.loopFoeDmg, loop), r: 46 * S + 14,
-    score: 1500, xp: 40,
-    color: COL.boss, shape: 8,
+    spd: def.spd, dmg: 24 * CFG.dmgMul(G.time) * Math.pow(CFG.loopFoeDmg, loop), r: def.rr * S + 10,
+    score: def.score, xp: 40,
+    color: def.color, shape: def.shape,
     rot: 0, rotV: 1.2, flash: 0, t: 0,
     state: 'enter', stateT: 1.2,
-    atkT: 2.0, atkKind: 0,
+    atkT: 2.2, atkKind: 0,
     ringN: 14,
+    // per-kind state
+    windupT: 0, dashT: 0, dashDx: 0, dashDy: 0, // warden dash
+    webT: 1.5,                                   // weaver webs
+    novaWarn: 0,                                 // herald nova telegraph
+    strafeDir: 1,                                // weaver strafe
   };
   G.enemies.push(b);
   G.boss = b;
   AU.warn();
-  showWarn('⚠ WARDEN APPROACHING ⚠');
+  showWarn('⚠ ' + def.name + ' APPROACHING ⚠');
   addShake(0.5);
   el.bossbar.classList.remove('hidden');
+  el.bossname.textContent = def.name;
+  el.bossname.style.color = def.color;
+  el.bossfill.style.background = 'linear-gradient(90deg,' + def.color + 'cc,' + def.color + ')';
+  bossOnSpawn(b);
+}
+/* each boss opens its fight with its signature minions */
+function bossOnSpawn(b) {
+  const k = b.bossKind;
+  const setup = {
+    warden:   { type: 'shard', n: 3 },
+    splitter: { type: 'spark', n: 2 },
+    weaver:   { type: 'threadling', n: 2 },
+    leech:    { type: 'siphon', n: 2 },
+    herald:   { type: null, n: 0 },
+  }[k] || { type: null, n: 0 };
+  for (let i = 0; i < setup.n; i++) {
+    const a = (i / setup.n) * TAU;
+    const m = spawnMinion(setup.type, b, b.x + Math.cos(a) * 130, b.y + Math.sin(a) * 130);
+    if (setup.type === 'shard') m.ang = a;
+  }
+  toast(BOSS_DEFS[k].name + ' — ' + BOSS_DEFS[k].tag);
 }
 
-function bossAttack(b) {
+/* per-kind boss movement + attack cadence; returns seek velocity */
+function bossFight(b, dt, nx, ny, d) {
   const p = G.player;
-  const kind = b.atkKind % 3;
+  b.atkT -= dt;
+  const k = b.bossKind;
+  let mx = 0, my = 0;
+  if (k === 'warden') {
+    if (b.dashT > 0) {
+      b.dashT -= dt;
+      mx = b.dashDx * b.spd * 3.4; my = b.dashDy * b.spd * 3.4;
+      if (b.dashT <= 0) spawnParts(b.x, b.y, b.color, 16, 260, 0.5, 4);
+    } else if (b.windupT > 0) {
+      b.windupT -= dt;
+      b.flash = 0.05;
+      if (b.windupT <= 0) {
+        const a = Math.atan2(p.y - b.y, p.x - b.x);
+        b.dashDx = Math.cos(a); b.dashDy = Math.sin(a);
+        b.dashT = 0.55;
+        AU.boom(false);
+      }
+    } else {
+      mx = nx * b.spd * 0.55; my = ny * b.spd * 0.55;
+    }
+    if (b.atkT <= 0) { wardenAttack(b); b.atkT = Math.max(1.6, 3.0 - G.bossCount * 0.2); }
+  } else if (k === 'splitter') {
+    mx = nx * b.spd * 0.5; my = ny * b.spd * 0.5;
+    if (b.atkT <= 0) { splitterAttack(b); b.atkT = 2.6; }
+  } else if (k === 'weaver') {
+    // keeps ~380 range, strafes fast, darts around the player
+    const want = 380;
+    const radial = d > want + 60 ? 1 : d < want - 60 ? -0.9 : 0;
+    if (Math.random() < dt * 0.25) b.strafeDir *= -1;
+    mx = (nx * radial + -ny * 0.9 * b.strafeDir) * b.spd;
+    my = (ny * radial + nx * 0.9 * b.strafeDir) * b.spd;
+    b.webT -= dt;
+    if (b.webT <= 0) {
+      b.webT = 2.6;
+      layWeb(b.x, b.y, 95, CFG.webLife);
+      spawnParts(b.x, b.y, b.color, 10, 160, 0.4, 3);
+    }
+    if (b.atkT <= 0) { weaverAttack(b); b.atkT = 2.2; }
+  } else if (k === 'leech') {
+    mx = nx * b.spd * 0.8; my = ny * b.spd * 0.8;
+    if (b.atkT <= 0) { leechAttack(b); b.atkT = 3.0; }
+  } else if (k === 'herald') {
+    // anchors near its void, keeps ~520 from the player
+    let ax = 0, ay = 0;
+    if (b.voidRef && !b.voidRef.sealed) { ax = b.voidRef.x - b.x; ay = b.voidRef.y - b.y; }
+    const ad = Math.hypot(ax, ay) || 1;
+    const want = 520;
+    const radial = d > want + 80 ? 1 : d < want - 80 ? -0.7 : 0;
+    mx = nx * radial * b.spd * 0.7 + (ax / ad) * b.spd * 0.35 * Math.min(1, ad / 300);
+    my = ny * radial * b.spd * 0.7 + (ay / ad) * b.spd * 0.35 * Math.min(1, ad / 300);
+    if (b.novaWarn > 0) {
+      b.novaWarn -= dt;
+      b.flash = 0.05;
+      if (b.novaWarn <= 0) heraldNova(b);
+    }
+    if (b.atkT <= 0) { heraldAttack(b); b.atkT = 3.4; }
+  } else {
+    mx = nx * b.spd * 0.55; my = ny * b.spd * 0.55;
+    if (b.atkT <= 0) { wardenAttack(b); b.atkT = 2.7; }
+  }
+  return { x: mx, y: my };
+}
+
+function wardenAttack(b) {
+  const p = G.player;
+  const kind = b.atkKind % 4;
   b.atkKind++;
   if (kind === 0) {
     // radial burst
@@ -1091,15 +1312,164 @@ function bossAttack(b) {
       enemyShoot(b.x, b.y, Math.cos(a), Math.sin(a), 330, b.dmg * 0.6);
     }
     AU.shoot();
+  } else if (kind === 2) {
+    // telegraphed dash
+    b.windupT = 0.7;
+    addFloat(b.x, b.y - 70, '!', b.color, 30);
+    AU.warn();
   } else {
-    // summon mites
-    for (let i = 0; i < 4; i++) {
+    // reinforce its shard guard
+    let n = 0;
+    for (const e of G.enemies) if (e.bossRef === b && e.type === 'shard') n++;
+    for (let i = n; i < 3; i++) {
       const a = rand(0, TAU);
-      spawnEnemy('mite', b.x + Math.cos(a) * 70, b.y + Math.sin(a) * 70);
+      const m = spawnMinion('shard', b, b.x + Math.cos(a) * 110, b.y + Math.sin(a) * 110);
+      m.ang = a;
     }
-    spawnParts(b.x, b.y, COL.boss, 20, 260, 0.6, 5);
+    spawnParts(b.x, b.y, b.color, 14, 220, 0.5, 4);
   }
   addShake(0.25);
+}
+
+function splitterAttack(b) {
+  const p = G.player;
+  const kind = b.atkKind % 3;
+  b.atkKind++;
+  if (kind === 0) {
+    // shed sparks
+    let n = bossMinions(b);
+    for (let i = 0; i < 3 && n < 8; i++, n++) {
+      const a = rand(0, TAU);
+      spawnMinion('spark', b, b.x + Math.cos(a) * 80, b.y + Math.sin(a) * 80);
+    }
+    spawnParts(b.x, b.y, b.color, 16, 240, 0.5, 4);
+    AU.boom(false);
+  } else if (kind === 1) {
+    // glob lob: slow heavy orbs
+    const base = Math.atan2(p.y - b.y, p.x - b.x);
+    for (let i = -2; i <= 2; i++) {
+      const a = base + i * 0.22;
+      enemyShoot(b.x, b.y, Math.cos(a), Math.sin(a), 170, b.dmg * 0.7);
+    }
+    AU.shoot();
+  } else {
+    // shockwave pulse: knockback + damage up close
+    const d = Math.hypot(p.x - b.x, p.y - b.y) || 1;
+    if (d < 320) {
+      p.vx += (p.x - b.x) / d * 520;
+      p.vy += (p.y - b.y) / d * 520;
+      damagePlayer(b.dmg * 0.5, b.x, b.y);
+    }
+    G.shocks.push({ x: b.x, y: b.y, r: 30, maxR: 320, life: 0.5, maxLife: 0.5 });
+    addShake(0.4);
+    AU.boom(true);
+  }
+}
+
+function weaverAttack(b) {
+  const p = G.player;
+  const kind = b.atkKind % 3;
+  b.atkKind++;
+  if (kind === 0) {
+    // web burst right at the player
+    layWeb(p.x, p.y, 100, CFG.webLife);
+    addFloat(p.x, p.y - 30, 'WEBBED', '#46f6ff', 16);
+    AU.shoot();
+  } else if (kind === 1) {
+    // 3-way spread
+    const base = Math.atan2(p.y - b.y, p.x - b.x);
+    for (let i = -1; i <= 1; i++) {
+      const a = base + i * 0.3;
+      enemyShoot(b.x, b.y, Math.cos(a), Math.sin(a), 300, b.dmg * 0.5);
+    }
+    AU.shoot();
+  } else {
+    // summon threadlings
+    let n = 0;
+    for (const e of G.enemies) if (e.bossRef === b && e.type === 'threadling') n++;
+    for (let i = n; i < 3; i++) {
+      const a = rand(0, TAU);
+      const m = spawnMinion('threadling', b, b.x + Math.cos(a) * 90, b.y + Math.sin(a) * 90);
+      m.webT = rand(2, 4);
+    }
+    spawnParts(b.x, b.y, b.color, 12, 200, 0.5, 4);
+  }
+}
+
+function leechAttack(b) {
+  const p = G.player;
+  const kind = b.atkKind % 3;
+  b.atkKind++;
+  if (kind === 0) {
+    // tether harpoon: slow, latches the kill-streak (no direct damage)
+    const a = Math.atan2(p.y - b.y, p.x - b.x);
+    G.ebullets.push({
+      x: b.x, y: b.y, vx: Math.cos(a) * 210, vy: Math.sin(a) * 210,
+      dmg: 0, r: 9, life: 4, t: 0, tether: true, from: b,
+    });
+    spawnParts(b.x, b.y, b.color, 8, 180, 0.3, 3);
+    AU.shoot();
+  } else if (kind === 1) {
+    // release siphons
+    let n = bossMinions(b);
+    for (let i = 0; i < 3 && n < 6; i++, n++) {
+      const a = rand(0, TAU);
+      spawnMinion('siphon', b, b.x + Math.cos(a) * 80, b.y + Math.sin(a) * 80);
+    }
+    spawnParts(b.x, b.y, b.color, 12, 200, 0.5, 4);
+  } else {
+    // drain pulse
+    const d = Math.hypot(p.x - b.x, p.y - b.y);
+    G.shocks.push({ x: b.x, y: b.y, r: 30, maxR: 280, life: 0.5, maxLife: 0.5, color: '#7dff6a' });
+    if (d < 280 && p.alive) {
+      G.mult = Math.max(1, G.mult - 0.8);
+      damagePlayer(b.dmg * 0.4, b.x, b.y);
+      addFloat(p.x, p.y - 30, 'DRAINED', '#7dff6a', 17);
+    }
+    AU.boom(false);
+  }
+}
+
+function heraldAttack(b) {
+  const p = G.player;
+  const kind = b.atkKind % 3;
+  b.atkKind++;
+  if (kind === 0) {
+    // summon void-touched from its own void — the one fight where adds keep coming
+    const open = (b.voidRef && !b.voidRef.sealed) ? [b.voidRef] : openVoids();
+    let n = bossMinions(b);
+    for (let i = 0; i < 2 && n < 10 && open.length; i++, n++) {
+      const m = spawnVoidTouched(pickType(G.time), open, false);
+      m.minion = true; m.bossRef = b;
+    }
+    spawnParts(b.x, b.y, b.color, 16, 240, 0.6, 5);
+    AU.boom(false);
+  } else if (kind === 1) {
+    // nova telegraph
+    b.novaWarn = 1.1;
+    addFloat(b.x, b.y - 80, '!', b.color, 34);
+    AU.warn();
+  } else {
+    // aimed orb burst
+    const base = Math.atan2(p.y - b.y, p.x - b.x);
+    for (let s = 0; s < 3; s++) {
+      for (let i = -1; i <= 1; i++) {
+        const a = base + i * 0.18 + s * 0.06;
+        enemyShoot(b.x, b.y, Math.cos(a), Math.sin(a), 290, b.dmg * 0.5);
+      }
+    }
+    AU.shoot();
+  }
+}
+function heraldNova(b) {
+  const n = 18, off = rand(0, TAU);
+  for (let i = 0; i < n; i++) {
+    const a = off + (i / n) * TAU;
+    enemyShoot(b.x, b.y, Math.cos(a), Math.sin(a), 250, b.dmg * 0.55);
+  }
+  G.shocks.push({ x: b.x, y: b.y, r: 40, maxR: 420, life: 0.6, maxLife: 0.6, color: '#c07bff' });
+  addShake(0.5);
+  AU.boom(true);
 }
 
 function enemyShoot(x, y, dx, dy, spd, dmg) {
@@ -1156,6 +1526,11 @@ function killEnemy(e) {
   else AU.boom(false);
   // drops
   if (e.boss) {
+    const def = BOSS_DEFS[e.bossKind] || BOSS_DEFS.warden;
+    // the encounter ends with the boss: its minions die with it
+    for (const m of G.enemies.slice()) {
+      if (m.bossRef === e) killEnemy(m);
+    }
     for (let i = 0; i < 8; i++) dropShard(e.x, e.y, 5);
     dropHeal(e.x, e.y, 40);
     dropNuke(e.x, e.y);
@@ -1163,7 +1538,21 @@ function killEnemy(e) {
     G.boss = null;
     el.bossbar.classList.add('hidden');
     AU.bossDie();
-    toast('WARDEN DESTROYED  +1500');
+    toast(def.name + ' DESTROYED  +' + e.score);
+    addFloat(e.x, e.y - 90, def.name + ' DOWN', def.color, 24);
+    if (e.bossKind === 'splitter') {
+      // bursts apart into its shed mass
+      for (let i = 0; i < 5; i++) {
+        const a = rand(0, TAU);
+        spawnEnemy('mite', e.x + Math.cos(a) * 60, e.y + Math.sin(a) * 60, false, false);
+      }
+      for (let i = 0; i < 2; i++) {
+        const a = rand(0, TAU);
+        spawnEnemy('spark', e.x + Math.cos(a) * 90, e.y + Math.sin(a) * 90, false, false);
+      }
+    }
+    const pl = G.player;
+    if (pl.leechFrom === e) { pl.leechT = 0; pl.leechFrom = null; }
     if (e.storyBoss && G.story && G.story.phase !== 'off') storyBossDown(e);
   } else if (e.elite) {
     for (let i = 0; i < 5; i++) dropShard(e.x, e.y, e.xp / 5);
@@ -1334,7 +1723,7 @@ function applyUpgrade(id) {
    ============================================================ */
 const el = {};
 ['hud', 'menu', 'levelup', 'paused', 'gameover', 'cards', 'hpfill', 'hptext',
- 'hpbar', 'xpfill', 'lvltext', 'nukeline', 'timer', 'score', 'bossbar', 'bossfill',
+ 'hpbar', 'xpfill', 'lvltext', 'nukeline', 'timer', 'score', 'bossbar', 'bossfill', 'bossname',
  'storyline', 'badgeline',
  'storydone', 'storydtitle', 'storydtag', 'storydstats', 'storycontinue', 'storymenu',
  'stats', 'newbest', 'bestline', 'ptsline', 'toast', 'warnbanner',
@@ -1728,8 +2117,24 @@ const ENEMY_INFO = [
     desc: 'Any type, supercharged: 5× HP, 1.5× damage, 5× score & XP. Magenta and angry.' },
   { id: 'voidt', name: 'VOID-TOUCHED', ico: '◈', color: '#b14dff',
     desc: 'Enemies crawling out of open voids: 1.45× HP, slightly faster, 2× score. Violet glow.' },
-  { id: 'warden', name: 'WARDEN', ico: '👁', color: COL.boss,
-    desc: 'The void boss. Emerges from an open void every 75s — kill it to seal that void. 13k base HP, scaling with run time and loop.' },
+  { id: 'shard', name: 'AEGIS SHARD', ico: '⬢', color: '#7df9ff',
+    desc: "WARDEN's orbiting guard. Soaks your bullets with its body — clear the shards to hit the boss." },
+  { id: 'spark', name: 'SPARK', ico: '▲', color: '#ffb347',
+    desc: 'Shed by the SPLITTER. Fast jittery chaser — and the boss bursts into more when it dies.' },
+  { id: 'threadling', name: 'THREADLING', ico: '⬟', color: '#46f6ff',
+    desc: "WEAVER's brood. Slow chasers that lay their own slowing webs." },
+  { id: 'siphon', name: 'SIPHON', ico: '◆', color: '#7dff6a',
+    desc: "LEECH's spawn. Latches onto you for 3s, draining your kill-streak. Max 3 at once." },
+  { id: 'b-warden', name: 'BOSS: WARDEN', ico: '✕', color: '#ff4d6e',
+    desc: 'First of the five. Shard-guarded juggernaut: radial bursts, aimed fans, telegraphed dash.' },
+  { id: 'b-splitter', name: 'BOSS: SPLITTER', ico: '✸', color: '#ffb347',
+    desc: 'Swollen mass that sheds sparks, lobs heavy globs, and bursts apart into mites on death.' },
+  { id: 'b-weaver', name: 'BOSS: WEAVER', ico: '❋', color: '#46f6ff',
+    desc: 'Fast and fragile. Webs the arena floor (you move at half speed inside), darts around you.' },
+  { id: 'b-leech', name: 'BOSS: LEECH', ico: '◉', color: '#7dff6a',
+    desc: 'Anti-greed horror: tether harpoons and latching siphons drain your kill-streak. Phase/force snaps tethers.' },
+  { id: 'b-herald', name: 'BOSS: HERALD', ico: '♛', color: '#c07bff',
+    desc: 'Anchors to its void and summons void-touched endlessly. Kill it fast — or drown in adds.' },
 ];
 function openEnemies(origin) {
   AU.init(); AU.click();
@@ -1895,8 +2300,14 @@ function liveSkipToBoss(n) {
   if (st.phase === 'calm') startRupture();
   st.ruptureT = 3; st.spawnHold = 0;
   if (G.boss) { // clear the current boss silently — no seal, no rewards
-    const i = G.enemies.indexOf(G.boss);
+    const old = G.boss;
+    const i = G.enemies.indexOf(old);
     if (i >= 0) G.enemies.splice(i, 1);
+    for (let j = G.enemies.length - 1; j >= 0; j--) {
+      if (G.enemies[j].bossRef === old) G.enemies.splice(j, 1);
+    }
+    const pl = G.player;
+    if (pl.leechFrom === old) { pl.leechT = 0; pl.leechFrom = null; }
     G.boss = null;
     el.bossbar.classList.add('hidden');
   }
@@ -1921,11 +2332,16 @@ function liveToggleSpawnMode() {
   st.spawnMode = st.spawnMode === 'classic' ? 'story' : 'classic';
   toast(st.spawnMode === 'classic' ? 'SPAWN MODE: CLASSIC' : 'SPAWN MODE: STORYLINE');
 }
-function liveSpawnBoss() {
+function liveSpawnBoss(kind) {
   if (G.boss) return toast('BOSS ALREADY OUT');
+  kind = kind || 'warden';
   const st = liveStory();
-  if (st && st.phase === 'voidwar') { st.bossT = 0.05; toast('WARDEN INCOMING'); }
-  else { G.bossCount++; spawnBoss(); }
+  if (st && st.phase === 'voidwar') {
+    // queue the story boss machinery but force this kind next
+    st.bossT = 0.05;
+    st.nextBossKind = kind;
+    toast(BOSS_DEFS[kind].name + ' INCOMING');
+  } else { G.bossCount++; spawnBoss(undefined, undefined, kind); }
 }
 function liveSpawnElite() {
   const pos = spawnRing();
@@ -1995,7 +2411,11 @@ function renderLiveOps() {
   b.appendChild(g);
   liveBtn(g, 'SPAWN MODE: ' + (st ? st.spawnMode.toUpperCase() : 'N/A'), liveToggleSpawnMode);
   liveBtn(g, 'FREEZE SPAWNS: ' + (G.devNoSpawn ? 'ON' : 'OFF'), () => { G.devNoSpawn = !G.devNoSpawn; });
-  liveBtn(g, 'SPAWN WARDEN NOW', liveSpawnBoss);
+  liveBtn(g, 'SPAWN WARDEN', () => liveSpawnBoss('warden'));
+  liveBtn(g, 'SPAWN SPLITTER', () => liveSpawnBoss('splitter'));
+  liveBtn(g, 'SPAWN WEAVER', () => liveSpawnBoss('weaver'));
+  liveBtn(g, 'SPAWN LEECH', () => liveSpawnBoss('leech'));
+  liveBtn(g, 'SPAWN HERALD', () => liveSpawnBoss('herald'));
   liveBtn(g, 'SPAWN ELITE NOW', liveSpawnElite);
   liveBtn(g, 'SPAWN MITE', () => liveSpawnType('mite'));
   liveBtn(g, 'SPAWN DASHER', () => liveSpawnType('dasher'));
@@ -2094,8 +2514,8 @@ const HELP_TEXT = {
   // storyline
   story_on: 'Master switch for the VOIDSTORM storyline (calm → rupture → void war). Takes effect on run start.',
   story_tearat: 'Seconds of calm before the tears rupture into voids. Lower it to reach the action faster while testing.',
-  story_bosses: 'How many WARDEN kills it takes to seal every void and complete the storyline.',
-  story_bossfirst: 'Seconds after the rupture before the first WARDEN emerges from a void.',
+  story_bosses: 'How many boss kills it takes to seal every void and complete the storyline.',
+  story_bossfirst: 'Seconds after the rupture before the first boss emerges from a void.',
   story_bossevery: 'Seconds between WARDEN emergences during the void war.',
   story_hold: 'How long normal spawning stays paused after the rupture blast.',
   // points
@@ -2214,6 +2634,16 @@ function renderDev() {
   num(g, 'Drop: phase', CFG, 'dropPhaseCh', 0.001, 0, 1, 3, 'dropphasech');
   num(g, 'Mult step/kill', CFG, 'multStep', 0.05, 0, 1, 2, 'multstep');
   num(g, 'Mult cap', CFG, 'multCap', 0.5, 1, 20, 1, 'multcap');
+
+  // ---- void hazards (live) ----
+  b.appendChild(devSection('VOID HAZARDS · applies live'));
+  g = devGrid(); b.appendChild(g);
+  num(g, 'Pull radius', CFG, 'voidPullR', 10, 0, 800, 0, 'voidpullr');
+  num(g, 'Enemy pull accel', CFG, 'voidPullE', 10, 0, 2000, 0, 'voidpulle');
+  num(g, 'Player pull accel', CFG, 'voidPullP', 10, 0, 2000, 0, 'voidpullp');
+  num(g, 'Kill zone × voidR', CFG, 'voidKillK', 0.05, 0, 1.5, 2, 'voidkillk');
+  num(g, 'Web slow ×', CFG, 'webSlowK', 0.05, 0.1, 1, 2, 'webslowk');
+  num(g, 'Web lifetime', CFG, 'webLife', 1, 1, 60, 0, 'weblife');
 
   // ---- player base (next run) ----
   b.appendChild(devSection('PLAYER BASE · applies on run start'));
@@ -2603,9 +3033,11 @@ function startRupture() {
    the rest take the four corners of the big map (cycling if there are more) */
 function placeVoids(n) {
   const pts = [{ x: STORY.bigW / 2 + rand(-60, 60), y: STORY.bigH / 2 + rand(-60, 60) }];
+  // corner voids keep their classic absolute spots — the bigger map grows the
+  // walls outward around them, leaving room to maneuver
   const corners = [
-    { x: 300, y: 300 }, { x: STORY.bigW - 300, y: 300 },
-    { x: 300, y: STORY.bigH - 300 }, { x: STORY.bigW - 300, y: STORY.bigH - 300 },
+    { x: 300, y: 300 }, { x: 1900, y: 300 },
+    { x: 300, y: 1200 }, { x: 1900, y: 1200 },
   ];
   for (let i = 1; i < n; i++) {
     const c = corners[(i - 1) % 4];
@@ -2614,14 +3046,17 @@ function placeVoids(n) {
   return pts;
 }
 
-/* a WARDEN emerges from a random open void; killing it seals that void */
+/* a boss emerges from a random open void; killing it seals that void.
+   Boss order follows BOSS_ORDER: WARDEN -> SPLITTER -> WEAVER -> LEECH -> HERALD */
 function storySpawnBoss() {
   const st = G.story;
   const open = st.voids.filter(v => !v.sealed);
   const v = open.length ? pick(open) : null;
   const px = v ? v.x + rand(-40, 40) : CFG.world.w / 2;
   const py = v ? v.y + rand(-40, 40) : CFG.world.h / 2;
-  spawnBoss(px, py);
+  const kind = st.nextBossKind || bossKindFor(st.bossesDown + 1);
+  st.nextBossKind = null;
+  spawnBoss(px, py, kind);
   if (G.boss) { G.boss.storyBoss = true; G.boss.voidRef = v; }
   if (v) {
     G.shocks.push({ x: v.x, y: v.y, r: 8, maxR: v.r * 3.4, life: 0.8, maxLife: 0.8, color: '#b14dff' });
@@ -2766,7 +3201,13 @@ function updatePlayer(dt, inp) {
   if (G.demo && p.nukes > 0 && p.alive && p.hp < p.maxhp * 0.3) fireNuke();
   IN.nukeQueued = false;
 
-  const tx = inp.mx * p.speed, ty = inp.my * p.speed;
+  // weaver webs slow the player
+  let slowK = 1;
+  for (const w of G.webs) {
+    if (dist2(p.x, p.y, w.x, w.y) < w.r * w.r) { slowK = CFG.webSlowK; break; }
+  }
+  p.webbed = slowK < 1;
+  const tx = inp.mx * p.speed * slowK, ty = inp.my * p.speed * slowK;
   const k = 1 - Math.exp(-12 * dt);
   p.vx = lerp(p.vx, tx, k);
   p.vy = lerp(p.vy, ty, k);
@@ -2790,6 +3231,17 @@ function updatePlayer(dt, inp) {
   if (p.phaseT > 0) {
     p.phaseT -= dt;
     if (p.phaseT <= 0) phaseImplode();
+  }
+  // leech tether: drains the kill-streak while attached; force/phase snaps it
+  if (p.leechT > 0) {
+    if (p.forceT > 0 || p.phaseT > 0) { p.leechT = 0; p.leechFrom = null; }
+    else {
+      p.leechT -= dt;
+      G.mult = Math.max(1, Math.round((G.mult - 0.45 * dt) * 100) / 100);
+      p.hp -= 3 * dt;
+      if (p.hp <= 0 && p.alive) damagePlayer(99999, p.x, p.y);
+      if (p.leechT <= 0) p.leechFrom = null;
+    }
   }
   // phase activation (keyboard E / touch ◈ button)
   if (IN.phaseQueued) {
@@ -2876,6 +3328,55 @@ function updateBullets(dt) {
   }
 }
 
+/* boss-minion movement; returns seek velocity */
+function minionMove(e, dt, nx, ny, d) {
+  const p = G.player;
+  let mx = 0, my = 0;
+  if (e.type === 'shard') {
+    // orbit the boss, intercepting bullets with their bodies
+    const b = e.bossRef;
+    if (b && G.enemies.includes(b)) {
+      e.ang = (e.ang || 0) + dt * 1.9;
+      e.x = b.x + Math.cos(e.ang) * 105;
+      e.y = b.y + Math.sin(e.ang) * 105;
+    } else { mx = nx * 120; my = ny * 120; }
+  } else if (e.type === 'spark') {
+    const wob = Math.sin(e.t * 7) * 0.4;
+    mx = (nx + -ny * wob) * e.spd; my = (ny + nx * wob) * e.spd;
+  } else if (e.type === 'threadling') {
+    mx = nx * e.spd; my = ny * e.spd;
+    e.webT = (e.webT === undefined ? rand(2, 4) : e.webT) - dt;
+    if (e.webT <= 0) {
+      e.webT = rand(4, 6);
+      layWeb(e.x, e.y, 60, CFG.webLife * 0.7);
+      spawnParts(e.x, e.y, e.color, 6, 120, 0.3, 3);
+    }
+  } else if (e.type === 'siphon') {
+    if (e.state === 'latch') {
+      // latched onto the player: drains the streak, nibbles hull
+      e.latchT -= dt;
+      e.latchAng = (e.latchAng || 0) + dt * 2;
+      e.x = p.x + Math.cos(e.latchAng) * (p.r + 10);
+      e.y = p.y + Math.sin(e.latchAng) * (p.r + 10);
+      if (p.alive) {
+        G.mult = Math.max(1, Math.round((G.mult - 0.3 * dt) * 100) / 100);
+        p.hp -= 2.5 * dt;
+        if (p.hp <= 0) damagePlayer(99999, e.x, e.y);
+      }
+      if (e.latchT <= 0) {
+        e.state = 'chase';
+        const a = rand(0, TAU);
+        e.vx = Math.cos(a) * 260; e.vy = Math.sin(a) * 260;
+      }
+    } else {
+      mx = nx * e.spd; my = ny * e.spd;
+    }
+  } else {
+    mx = nx * e.spd; my = ny * e.spd;
+  }
+  return { x: mx, y: my };
+}
+
 function updateEnemies(dt) {
   const p = G.player;
   for (let i = G.enemies.length - 1; i >= 0; i--) {
@@ -2894,13 +3395,12 @@ function updateEnemies(dt) {
         sx = nx * e.spd * 2.2; sy = ny * e.spd * 2.2;
         if (e.stateT <= 0 || d < 200) e.state = 'fight';
       } else {
-        sx = nx * e.spd * 0.55; sy = ny * e.spd * 0.55;
-        e.atkT -= dt;
-        if (e.atkT <= 0) {
-          bossAttack(e);
-          e.atkT = Math.max(1.4, 2.7 - G.bossCount * 0.25);
-        }
+        const mv = bossFight(e, dt, nx, ny, d);
+        sx = mv.x; sy = mv.y;
       }
+    } else if (e.minion) {
+      const mv = minionMove(e, dt, nx, ny, d);
+      sx = mv.x; sy = mv.y;
     } else if (e.type === 'mite') {
       const wob = Math.sin(e.t * 6) * 0.35;
       sx = (nx + -ny * wob) * e.spd; sy = (ny + nx * wob) * e.spd;
@@ -2956,7 +3456,20 @@ function updateEnemies(dt) {
     if (p.alive) {
       const rr = e.r + p.r;
       if (dist2(e.x, e.y, p.x, p.y) < rr * rr) {
-        damagePlayer(e.dmg, e.x, e.y);
+        if (e.type === 'siphon' && e.state !== 'latch' && p.forceT <= 0 && p.phaseT <= 0) {
+          // siphons latch on instead of just hitting (max 3 latched)
+          let latched = 0;
+          for (const o of G.enemies) if (o.type === 'siphon' && o.state === 'latch') latched++;
+          if (latched < 3) {
+            e.state = 'latch'; e.latchT = 3.2; e.latchAng = rand(0, TAU);
+            addFloat(p.x, p.y - 30, 'SIPHONED', '#7dff6a', 15);
+            AU.hit();
+          } else {
+            damagePlayer(e.dmg, e.x, e.y);
+          }
+        } else if (e.state !== 'latch') {
+          damagePlayer(e.dmg, e.x, e.y);
+        }
       }
     }
   }
@@ -2974,8 +3487,18 @@ function updateEBullets(dt) {
     if (p.alive) {
       const rr = b.r + p.r * 0.8;
       if (dist2(b.x, b.y, p.x, p.y) < rr * rr) {
-        damagePlayer(b.dmg, b.x - b.vx * 0.05, b.y - b.vy * 0.05);
-        G.ebullets.splice(i, 1);
+        if (b.tether) {
+          // leech harpoon: no direct damage, latches the kill-streak
+          if (p.forceT <= 0 && p.phaseT <= 0) {
+            p.leechT = 3; p.leechFrom = b.from || null;
+            addFloat(p.x, p.y - 30, 'TETHERED', '#7dff6a', 16);
+            AU.hit();
+          }
+          G.ebullets.splice(i, 1);
+        } else {
+          damagePlayer(b.dmg, b.x - b.vx * 0.05, b.y - b.vy * 0.05);
+          G.ebullets.splice(i, 1);
+        }
       }
     }
   }
@@ -2990,6 +3513,8 @@ function update(dt) {
   if (G.player.alive) updatePlayer(dt, inp);
   updateSpawns(dt);
   updateEnemies(dt);
+  updateVoids(dt);
+  updateWebs(dt);
   updateBullets(dt);
   updateEBullets(dt);
   updatePickups(dt);
@@ -3410,22 +3935,73 @@ function draw() {
     }
   }
 
+  // weaver webs (under everything)
+  for (const w of G.webs) {
+    const a = clamp(w.life / w.maxLife, 0, 1);
+    ctx.save();
+    ctx.translate(w.x, w.y);
+    ctx.globalAlpha = 0.20 * a + 0.06;
+    ctx.fillStyle = '#46f6ff';
+    ctx.beginPath(); ctx.arc(0, 0, w.r, 0, TAU); ctx.fill();
+    ctx.globalAlpha = 0.45 * a;
+    ctx.strokeStyle = '#46f6ff'; ctx.lineWidth = 1.5;
+    for (let i = 0; i < 6; i++) {
+      const an = w.seed + (i / 6) * TAU;
+      ctx.beginPath(); ctx.moveTo(0, 0);
+      ctx.lineTo(Math.cos(an) * w.r, Math.sin(an) * w.r); ctx.stroke();
+    }
+    ctx.beginPath(); ctx.arc(0, 0, w.r * 0.55, 0, TAU); ctx.stroke();
+    ctx.beginPath(); ctx.arc(0, 0, w.r * 0.28, 0, TAU); ctx.stroke();
+    ctx.restore();
+  }
+  // leech tether
+  const _pl = G.player;
+  if (_pl.leechT > 0 && _pl.leechFrom && G.enemies.includes(_pl.leechFrom)) {
+    ctx.save();
+    ctx.strokeStyle = '#7dff6a'; ctx.lineWidth = 3;
+    ctx.globalAlpha = 0.55 + Math.sin(tt * 14) * 0.25;
+    ctx.setLineDash([10, 6]);
+    ctx.beginPath();
+    ctx.moveTo(_pl.leechFrom.x, _pl.leechFrom.y);
+    ctx.lineTo(_pl.x, _pl.y);
+    ctx.stroke();
+    ctx.restore();
+  }
   // enemies
   for (const e of G.enemies) {
     ctx.save();
     ctx.translate(e.x, e.y);
     const col = e.flash > 0 ? '#ffffff' : e.color;
     if (e.boss) {
-      // outer rotating octagon
+      // outer rotating shell (sides vary per boss)
       ctx.rotate(e.rot);
-      poly(8, e.r, 0); neon(col, 4);
+      poly(e.shape, e.r, 0); neon(col, 4);
       ctx.rotate(-e.rot * 1.7);
-      poly(8, e.r * 0.68, 0); neon(col, 2.5);
+      poly(e.shape, e.r * 0.68, 0); neon(col, 2.5);
       // core
       ctx.fillStyle = '#fff';
       ctx.globalAlpha = 0.85 + Math.sin(tt * 8) * 0.15;
       ctx.beginPath(); ctx.arc(0, 0, e.r * 0.2, 0, TAU); ctx.fill();
       ctx.globalAlpha = 1;
+      // kind glyph
+      const glyph = { warden: '✕', splitter: '✸', weaver: '❋', leech: '◉', herald: '♛' }[e.bossKind];
+      if (glyph) {
+        ctx.save();
+        ctx.rotate(e.rot * 0.7); // cancel accumulated spin
+        ctx.fillStyle = col;
+        ctx.font = Math.round(e.r * 0.55) + 'px sans-serif';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(glyph, 0, 1);
+        ctx.restore();
+      }
+      // herald nova telegraph: closing ring
+      if (e.bossKind === 'herald' && e.novaWarn > 0) {
+        ctx.strokeStyle = '#c07bff';
+        ctx.globalAlpha = 0.5 + Math.sin(tt * 20) * 0.3;
+        ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.arc(0, 0, 420 * (1 - e.novaWarn / 1.1) + 40, 0, TAU); ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
     } else {
       ctx.rotate(e.rot);
       poly(e.shape, e.r, 0); neon(col, 2.5);
