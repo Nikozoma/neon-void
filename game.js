@@ -2421,6 +2421,10 @@ function renderLiveOps() {
   liveBtn(g, 'SPAWN DASHER', () => liveSpawnType('dasher'));
   liveBtn(g, 'SPAWN SPITTER', () => liveSpawnType('spitter'));
   liveBtn(g, 'SPAWN TANK', () => liveSpawnType('tank'));
+  liveBtn(g, 'SPAWN SHARD', () => liveSpawnType('shard'));
+  liveBtn(g, 'SPAWN SPARK', () => liveSpawnType('spark'));
+  liveBtn(g, 'SPAWN THREADLING', () => liveSpawnType('threadling'));
+  liveBtn(g, 'SPAWN SIPHON', () => liveSpawnType('siphon'));
   liveBtn(g, 'KILL ALL ENEMIES', liveKillAll);
   // ---- player ----
   b.appendChild(devSection('PLAYER'));
