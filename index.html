@@ -129,7 +129,7 @@
   <!-- Dev console (hidden) -->
   <div id="devmenu" class="overlay hidden">
     <div class="panel devpanel">
-      <h2>DEV CONSOLE</h2>
+      <h2 id="devtitle">DEV CONSOLE</h2>
       <p class="tag">tuning lab — handle with care</p>
       <div class="devhelpwrap"><button id="devhelpbtn" class="ghostbtn devhelpbtn">HELP: OFF</button></div>
       <div id="devbody"></div>
@@ -146,8 +146,11 @@
     <div class="panel">
       <h2 class="cyan">DEVELOPER</h2>
       <p class="tag">select category</p>
-      <button id="hubrun" class="bigbtn hubbtn">⚙ RUN CONFIG<span class="sub">spawn · scaling · player · storyline — applies on run start</span></button>
-      <button id="hublive" class="bigbtn hubbtn">⚡ LIVE OPS<span class="sub">in-run cheats · skips · live state</span></button>
+      <button id="hubgeneral" class="bigbtn hubbtn">◈ GENERAL DEV TOOLS<span class="sub">points · progression · hard mode — applies on run start</span></button>
+      <button id="hubvoid" class="bigbtn hubbtn">🌌 VOID DEV TOOLS<span class="sub">storyline · void hazards — applies on run start / live</span></button>
+      <button id="hubenemy" class="bigbtn hubbtn">👾 ENEMY DEV TOOLS<span class="sub">spawning · scaling · types · drops</span></button>
+      <button id="hubship" class="bigbtn hubbtn">🚀 SHIP DEV TOOLS<span class="sub">player base stats — applies on run start</span></button>
+      <button id="hublive" class="bigbtn hubbtn">⚡ IN-RUN DEV TOOLS<span class="sub">cheats · skips · live state — applies immediately</span></button>
       <button id="hubstore" class="bigbtn hubbtn">◈ STORE DEV<span class="sub">void market economy &amp; weapon tuning</span></button>
       <button id="hubwipe" class="ghostbtn wipebtn">🗑 WIPE ALL DATA<span class="sub">erase every save — play as a fresh player</span></button>
       <button id="hubclose" class="ghostbtn">CLOSE</button>
@@ -157,7 +160,7 @@
   <!-- Live ops: in-run dev tools -->
   <div id="liveops" class="overlay hidden">
     <div class="panel devpanel">
-      <h2 class="gold">LIVE OPS</h2>
+      <h2 class="gold">⚡ IN-RUN DEV TOOLS</h2>
       <p class="tag">in-run — applies immediately</p>
       <div id="liveopsbody"></div>
       <div class="devactions">
