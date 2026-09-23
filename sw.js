@@ -1,5 +1,5 @@
-/* Neon Void service worker — cache-first, offline capable */
-const CACHE = 'neon-void-v23';
+/* Void Wars service worker — cache-first, offline capable */
+const CACHE = 'void-wars-v24';
 const ASSETS = [
   './',
   './index.html',
