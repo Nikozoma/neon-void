@@ -1775,8 +1775,8 @@ const el = {};
  'skills', 'skillsbtn', 'pskillsbtn', 'skillgrid', 'skillslots', 'skillstag', 'skillsback',
  'enemies', 'enemiesbtn', 'penemiesbtn', 'enemygrid', 'enemiesback',
  'startbtn', 'retrybtn', 'menubtn', 'resumebtn', 'quitbtn', 'pausebtn', 'mutebtn',
- 'devlogo', 'devbtn', 'devmenu', 'devbody', 'devrestart', 'devreset', 'devback',
- 'devhub', 'hubrun', 'hublive', 'hubstore', 'hubwipe', 'hubclose', 'fxline',
+ 'devlogo', 'devbtn', 'devmenu', 'devtitle', 'devbody', 'devrestart', 'devreset', 'devback',
+ 'devhub', 'hubgeneral', 'hubvoid', 'hubenemy', 'hubship', 'hublive', 'hubstore', 'hubwipe', 'hubclose', 'fxline',
  'liveops', 'liveopsbody', 'liveopsback',
 'devhelpbtn', 'shopdevhelpbtn', 'helpop', 'helptitle', 'helpbody', 'helpcur', 'helpclose',
 'pdevbtn',
@@ -2301,8 +2301,10 @@ function backToHub() {
   if (devOrigin !== 'menu') refreshMenuPts();
 }
 /* category entrances — every dev button goes through the hub first */
-function openDev() {
+function openDev(cat) {
   AU.click();
+  devCat = (cat && DEV_CATS[cat]) ? cat : 'general';
+  el.devtitle.textContent = DEV_CATS[devCat];
   renderDev();
   el.devhub.classList.add('hidden');
   el.devmenu.classList.remove('hidden');
@@ -2449,7 +2451,7 @@ function renderLiveOps() {
   } else {
     const p = document.createElement('p');
     p.className = 'tag';
-    p.textContent = 'STORYLINE IS OFF — ENABLE IT IN RUN CONFIG';
+    p.textContent = 'STORYLINE IS OFF — ENABLE IT IN 🌌 VOID DEV TOOLS';
     g.appendChild(p);
   }
   // ---- spawning ----
@@ -2569,6 +2571,39 @@ const HELP_TEXT = {
   story_bossfirst: 'Seconds after the rupture before the first boss emerges from a void.',
   story_bossevery: 'Seconds between WARDEN emergences during the void war.',
   story_hold: 'How long normal spawning stays paused after the rupture blast.',
+  // drops: pickups & streak
+  dropdronech: 'Chance a regular kill drops a 🔫 weapon drone. The drone orbits you for its duration, firing a random owned non-equipped weapon.',
+  dropaegisch: 'Chance a regular kill drops a 🛡 force field: 10s of invulnerability, then it converts into +1 Aegis shield (stacks past 3).',
+  dropshieldch: 'Chance a regular kill drops a shield replenish: restores 1 of your 3 base Aegis shields.',
+  dropnukech: 'Chance a regular kill drops a ☢ nuke pickup.',
+  dropphasech: 'Chance a regular kill drops a ◈ phase charge (max 3 held, E key / ◈ button): 10s intangibility, then an implosion that kills non-bosses in radius and chunks bosses.',
+  multstep: 'Kill-streak score multiplier grows by this per kill, up to the cap. Resets to ×1 when you take a hit.',
+  multcap: 'Maximum kill-streak score multiplier.',
+  dronetime: 'Seconds the weapon drone orbits before expiring.',
+  forcetime: 'Seconds of invulnerability the force field grants before converting to a shield.',
+  phasetime: 'Seconds of intangibility the phase charge grants before the implosion.',
+  phaseboomr: 'Implosion radius (px) when a phase charge ends. Kills non-bosses inside it.',
+  phaseboomdmg: 'Damage the phase implosion deals to a boss caught inside the radius.',
+  // void hazards
+  voidpullr: 'Radius (px) around an open void where its gravity starts tugging on enemies and you.',
+  voidpulle: 'Gravity acceleration (px/s²) pulling enemies toward open voids. Enemies dragged inside grant kill credit + streak.',
+  voidpullp: 'Gravity acceleration (px/s²) pulling you toward open voids. Escapable while moving — lethal inside the kill zone.',
+  voidkillk: 'Fraction of void radius that is the kill zone. Anything crossing it is destroyed — you included.',
+  webslowk: 'Weaver webs slow you to this × your move speed while you stand in them.',
+  weblife: 'Seconds a weaver web lasts before dissolving.',
+  voidspecialch: 'Chance a void-spawned enemy is a special void-foe (shard / spark / threadling / siphon) instead of a void-touched regular.',
+  // storyline extras
+  story_warramp: 'Seconds after the rupture during which spawning ramps from 55% up to full void-war intensity.',
+  story_crackat: 'Seconds into the calm phase when the first tears start cracking open in the background (visual).',
+  story_cracks: 'How many tear cracks appear across the arena during the calm phase (visual only).',
+  story_crackspread: 'How far (px) each crack spreads from its origin point across the arena.',
+  // hard mode (void-plus loop)
+  cfg_pickdr: 'Diminishing returns on repeat in-run upgrade picks: each extra stack multiplies the effect by this.',
+  cfg_lspawnint: 'Void-plus loop: fixed seconds between spawn ticks (replaces the normal ramp).',
+  cfg_lspawnbatch: 'Void-plus loop: extra enemies released per spawn tick.',
+  cfg_lfoehp: 'Void-plus loop: enemy HP multiplier applied per loop.',
+  cfg_lfoedmg: 'Void-plus loop: enemy damage multiplier applied per loop.',
+  cfg_lbosshp: 'Void-plus loop: boss HP multiplier applied per loop.',
   // points
   pts: 'Your meta-point bank. Points persist between runs and buy store upgrades.',
   // shop economy
@@ -2630,148 +2665,170 @@ function devGrid() {
   return g;
 }
 
+/* ============================================================
+   DEV CONSOLE — tuning categories.
+   GENERAL: points · progression · hard mode (void-plus loop)
+   VOID:    storyline · void hazards
+   ENEMY:   spawning · scaling · enemy types · drops
+   SHIP:    player base stats
+   IN-RUN (live ops) and STORE DEV live in their own overlays.
+   ============================================================ */
+const DEV_CATS = {
+  general: '◈ GENERAL DEV TOOLS',
+  void: '🌌 VOID DEV TOOLS',
+  enemy: '👾 ENEMY DEV TOOLS',
+  ship: '🚀 SHIP DEV TOOLS',
+};
+let devCat = 'general';
+
 function renderDev() {
   const b = el.devbody;
   b.innerHTML = '';
   const num = (parent, label, obj, key, step, min, max, dec, help) =>
     parent.appendChild(devNum(label, () => obj[key], (v) => { obj[key] = v; }, step, min, max, dec, help));
-
-  // ---- spawning (live) ----
-  b.appendChild(devSection('SPAWNING · applies live'));
-  let g = devGrid(); b.appendChild(g);
-  num(g, 'Max enemies', CFG, 'maxEnemies', 5, 1, 500, 0, 'maxenemies');
-  num(g, 'Spawn interval base (s)', CFG, 'spawnBase', 0.05, 0.05, 5, 2, 'spawnbase');
-  num(g, 'Interval shrink /s', CFG, 'spawnDecay', 0.0005, 0, 0.05, 4, 'spawndecay');
-  num(g, 'Spawn interval min (s)', CFG, 'spawnMin', 0.05, 0.05, 5, 2, 'spawnmin');
-  num(g, 'Batch +1 every (s)', CFG, 'batchEvery', 1, 5, 300, 0, 'batchevery');
-  num(g, 'Elite every (s)', CFG, 'eliteEvery', 1, 5, 600, 0, 'eliteevery');
-  num(g, 'First elite at (s)', CFG, 'firstElite', 1, 0, 600, 0, 'firstelite');
-  num(g, 'Boss every (s)', CFG, 'bossEvery', 5, 10, 1200, 0, 'bossevery');
-  num(g, 'First boss at (s)', CFG, 'firstBoss', 5, 0, 1200, 0, 'firstboss');
-
-  // ---- enemy scaling (live) ----
-  b.appendChild(devSection('ENEMY SCALING · applies live'));
-  g = devGrid(); b.appendChild(g);
-  num(g, 'HP doubles every (s)', CFG, 'hpRate', 1, 5, 900, 0, 'hprate');
-  num(g, 'Speed ramps over (s)', CFG, 'spdRate', 5, 20, 1800, 0, 'spdrate');
-  num(g, 'Speed growth cap', CFG, 'spdCap', 0.05, 0, 2, 2, 'spdCap');
-  num(g, 'Damage doubles every (s)', CFG, 'dmgRate', 5, 20, 1800, 0, 'dmgrate');
-
-  // ---- enemy types (new spawns) ----
-  b.appendChild(devSection('ENEMY TYPES · applies to newly spawned'));
-  Object.keys(ETYPES).forEach((t) => {
-    const dh = document.createElement('div');
-    dh.className = 'devtype';
-    dh.textContent = t.toUpperCase();
-    b.appendChild(dh);
-    g = devGrid(); b.appendChild(g);
-    const E = ETYPES[t];
-    num(g, 'HP', E, 'hp', 1, 1, 9999, 0, 'et_hp');
-    num(g, 'Speed', E, 'spd', 5, 10, 1200, 0, 'et_spd');
-    num(g, 'Damage', E, 'dmg', 1, 0, 999, 0, 'et_dmg');
-    num(g, 'XP', E, 'xp', 1, 0, 500, 0, 'et_xp');
-    num(g, 'Score', E, 'score', 5, 0, 5000, 0, 'et_score');
-  });
-
-  // ---- drops (live) ----
-  b.appendChild(devSection('DROPS · applies live'));
-  g = devGrid(); b.appendChild(g);
-  num(g, 'Elite nuke chance', CFG, 'eliteNukeCh', 0.01, 0, 1, 2, 'elitenukech');
-  num(g, 'Elite heal chance', CFG, 'eliteHealCh', 0.01, 0, 1, 2, 'elitehealch');
-  num(g, 'Drop: drone', CFG, 'dropDroneCh', 0.001, 0, 1, 3, 'dropdronech');
-  num(g, 'Drop: force field', CFG, 'dropAegisCh', 0.001, 0, 1, 3, 'dropaegisch');
-  num(g, 'Drop: shield', CFG, 'dropShieldCh', 0.001, 0, 1, 3, 'dropshieldch');
-  num(g, 'Drop: nuke', CFG, 'dropNukeCh', 0.001, 0, 1, 3, 'dropnukech');
-  num(g, 'Drop: phase', CFG, 'dropPhaseCh', 0.001, 0, 1, 3, 'dropphasech');
-  num(g, 'Mult step/kill', CFG, 'multStep', 0.05, 0, 1, 2, 'multstep');
-  num(g, 'Mult cap', CFG, 'multCap', 0.5, 1, 20, 1, 'multcap');
-
-  // ---- void hazards (live) ----
-  b.appendChild(devSection('VOID HAZARDS · applies live'));
-  g = devGrid(); b.appendChild(g);
-  num(g, 'Pull radius', CFG, 'voidPullR', 10, 0, 800, 0, 'voidpullr');
-  num(g, 'Enemy pull accel', CFG, 'voidPullE', 10, 0, 2000, 0, 'voidpulle');
-  num(g, 'Player pull accel', CFG, 'voidPullP', 10, 0, 2000, 0, 'voidpullp');
-  num(g, 'Kill zone × voidR', CFG, 'voidKillK', 0.05, 0, 1.5, 2, 'voidkillk');
-  num(g, 'Web slow ×', CFG, 'webSlowK', 0.05, 0.1, 1, 2, 'webslowk');
-  num(g, 'Web lifetime', CFG, 'webLife', 1, 1, 60, 0, 'weblife');
-  num(g, 'Special void-foe ×', CFG, 'voidSpecialCh', 0.01, 0, 1, 2, 'voidspecialch');
-
-  // ---- player base (next run) ----
-  b.appendChild(devSection('PLAYER BASE · applies on run start'));
-  g = devGrid(); b.appendChild(g);
-  num(g, 'Max hull', PBASE, 'hp', 5, 1, 5000, 0, 'pb_hp');
-  num(g, 'Move speed', PBASE, 'speed', 10, 50, 1500, 0, 'pb_speed');
-  num(g, 'Fire rate /s', PBASE, 'fireRate', 0.25, 0.5, 30, 2, 'pb_firerate');
-  num(g, 'Bullet damage', PBASE, 'dmg', 1, 1, 999, 0, 'pb_dmg');
-  num(g, 'Projectiles', PBASE, 'proj', 1, 1, 12, 0, 'pb_proj');
-  num(g, 'Pierce', PBASE, 'pierce', 1, 0, 12, 0, 'pb_pierce');
-  num(g, 'Bullet speed', PBASE, 'bulletSpeed', 20, 100, 4000, 0, 'pb_bulletspeed');
-  num(g, 'Magnet radius', PBASE, 'magnet', 5, 10, 900, 0, 'pb_magnet');
-  num(g, 'Homing stage', PBASE, 'seek', 1, 0, 5, 0, 'pb_seek');
-  num(g, 'Crit chance', PBASE, 'crit', 0.05, 0, 1, 2, 'pb_crit');
-  num(g, 'Starting nukes', PBASE, 'nukes', 1, 0, 9, 0, 'pb_nukes');
-  num(g, 'Starting shields', PBASE, 'shields', 1, 0, 9, 0, 'pb_shields');
-
-  // ---- progression (next run) ----
-  b.appendChild(devSection('PROGRESSION · applies on run start'));
-  g = devGrid(); b.appendChild(g);
-  num(g, 'XP base', CFG, 'xpBase', 0.5, 1, 200, 1, 'xpb');
-  num(g, 'XP power', CFG, 'xpPow', 0.01, 1, 3, 2, 'xpp');
-
-  // ---- storyline (next run) ----
-  b.appendChild(devSection('STORYLINE · applies on run start'));
-  g = devGrid(); b.appendChild(g);
-  num(g, 'Storyline on/off', STORY, 'on', 1, 0, 1, 0, 'story_on');
-  num(g, 'Tear at (s)', STORY, 'tearAt', 5, 10, 600, 0, 'story_tearat');
-  num(g, 'Bosses to close', STORY, 'bossesToClose', 1, 1, 10, 0, 'story_bosses');
-  num(g, 'Void boss first (s)', STORY, 'voidBossFirst', 5, 5, 300, 0, 'story_bossfirst');
-  num(g, 'Void boss every (s)', STORY, 'voidBossEvery', 5, 10, 600, 0, 'story_bossevery');
-  num(g, 'Rupture hold (s)', STORY, 'ruptureHold', 1, 0, 30, 0, 'story_hold');
-  num(g, 'War ramp (s)', STORY, 'warRampT', 5, 0, 120, 0, 'story_wartramp');
-  num(g, 'Cracks at (s)', STORY, 'crackAt', 5, 0, 300, 0, 'story_crackat');
-  num(g, 'Calm cracks', STORY, 'calmCracks', 1, 0, 40, 0, 'story_cracks');
-  num(g, 'Crack spread', STORY, 'crackSpread', 5, 20, 200, 0, 'story_crackspread');
-
-  // ---- hard mode: void-plus loop scaling (next run) ----
-  b.appendChild(devSection('HARD MODE · loop scaling, applies on run start'));
-  g = devGrid(); b.appendChild(g);
-  num(g, 'Pick DR decay', CFG, 'pickDR', 0.05, 0.1, 1, 2, 'cfg_pickdr');
-  num(g, 'Loop spawn int (s)', CFG, 'loopSpawnInt', 0.05, 0.1, 2, 2, 'cfg_lspawnint');
-  num(g, 'Loop spawn batch+', CFG, 'loopSpawnBatch', 1, 0, 8, 0, 'cfg_lspawnbatch');
-  num(g, 'Loop foe HP ×', CFG, 'loopFoeHp', 0.05, 1, 4, 2, 'cfg_lfoehp');
-  num(g, 'Loop foe dmg ×', CFG, 'loopFoeDmg', 0.05, 1, 4, 2, 'cfg_lfoedmg');
-  num(g, 'Loop boss HP ×', CFG, 'loopBossHp', 0.05, 1, 4, 2, 'cfg_lbosshp');
-
-  // ---- points ----
-  b.appendChild(devSection('POINTS · applies immediately'));
-  g = devGrid(); b.appendChild(g);
-  const prow = document.createElement('div');
-  prow.className = 'devrow';
-  const plab = document.createElement('label');
-  plab.textContent = 'Points';
-  const pval = document.createElement('span');
-  pval.className = 'v';
-  const pstep = (d) => {
-    META.pts = Math.max(0, META.pts + d);
-    saveMeta(); refreshMenuPts(); pval.textContent = META.pts.toLocaleString('en-US');
-    AU.click();
+  const sec = (title, fn) => {
+    b.appendChild(devSection(title));
+    const g = devGrid(); b.appendChild(g); fn(g);
   };
-  const mkp = (t, d) => {
-    const btn = document.createElement('button');
-    btn.textContent = t; btn.style.width = 'auto'; btn.style.padding = '0 8px';
-    btn.addEventListener('click', () => pstep(d));
-    return btn;
-  };
-  pval.textContent = META.pts.toLocaleString('en-US');
-  prow.append(plab, mkp('−1K', -1000), pval, mkp('+1K', 1000), mkp('+10K', 10000));
-  prow.classList.add('hashelp');
-  prow.addEventListener('click', (ev) => {
-    if (!HELP_ON || ev.target.closest('button')) return;
-    openHelp('Points', HELP_TEXT.pts, META.pts);
-  });
-  g.appendChild(prow);
+
+  if (devCat === 'general') {
+    // ---- points ----
+    sec('POINTS · applies immediately', (g) => {
+      const prow = document.createElement('div');
+      prow.className = 'devrow';
+      const plab = document.createElement('label');
+      plab.textContent = 'Points';
+      const pval = document.createElement('span');
+      pval.className = 'v';
+      const pstep = (d) => {
+        META.pts = Math.max(0, META.pts + d);
+        saveMeta(); refreshMenuPts(); pval.textContent = META.pts.toLocaleString('en-US');
+        AU.click();
+      };
+      const mkp = (t, d) => {
+        const btn = document.createElement('button');
+        btn.textContent = t; btn.style.width = 'auto'; btn.style.padding = '0 8px';
+        btn.addEventListener('click', () => pstep(d));
+        return btn;
+      };
+      pval.textContent = META.pts.toLocaleString('en-US');
+      prow.append(plab, mkp('−1K', -1000), pval, mkp('+1K', 1000), mkp('+10K', 10000));
+      prow.classList.add('hashelp');
+      prow.addEventListener('click', (ev) => {
+        if (!HELP_ON || ev.target.closest('button')) return;
+        openHelp('Points', HELP_TEXT.pts, META.pts);
+      });
+      g.appendChild(prow);
+    });
+    // ---- progression (next run) ----
+    sec('PROGRESSION · applies on run start', (g) => {
+      num(g, 'XP base', CFG, 'xpBase', 0.5, 1, 200, 1, 'xpb');
+      num(g, 'XP power', CFG, 'xpPow', 0.01, 1, 3, 2, 'xpp');
+    });
+    // ---- hard mode: void-plus loop scaling (next run) ----
+    sec('HARD MODE · loop scaling, applies on run start', (g) => {
+      num(g, 'Pick DR decay', CFG, 'pickDR', 0.05, 0.1, 1, 2, 'cfg_pickdr');
+      num(g, 'Loop spawn int (s)', CFG, 'loopSpawnInt', 0.05, 0.1, 2, 2, 'cfg_lspawnint');
+      num(g, 'Loop spawn batch+', CFG, 'loopSpawnBatch', 1, 0, 8, 0, 'cfg_lspawnbatch');
+      num(g, 'Loop foe HP ×', CFG, 'loopFoeHp', 0.05, 1, 4, 2, 'cfg_lfoehp');
+      num(g, 'Loop foe dmg ×', CFG, 'loopFoeDmg', 0.05, 1, 4, 2, 'cfg_lfoedmg');
+      num(g, 'Loop boss HP ×', CFG, 'loopBossHp', 0.05, 1, 4, 2, 'cfg_lbosshp');
+    });
+  } else if (devCat === 'void') {
+    // ---- storyline (next run) ----
+    sec('STORYLINE · applies on run start', (g) => {
+      num(g, 'Storyline on/off', STORY, 'on', 1, 0, 1, 0, 'story_on');
+      num(g, 'Tear at (s)', STORY, 'tearAt', 5, 10, 600, 0, 'story_tearat');
+      num(g, 'Bosses to close', STORY, 'bossesToClose', 1, 1, 10, 0, 'story_bosses');
+      num(g, 'Void boss first (s)', STORY, 'voidBossFirst', 5, 5, 300, 0, 'story_bossfirst');
+      num(g, 'Void boss every (s)', STORY, 'voidBossEvery', 5, 10, 600, 0, 'story_bossevery');
+      num(g, 'Rupture hold (s)', STORY, 'ruptureHold', 1, 0, 30, 0, 'story_hold');
+      num(g, 'War ramp (s)', STORY, 'warRampT', 5, 0, 120, 0, 'story_warramp');
+      num(g, 'Cracks at (s)', STORY, 'crackAt', 5, 0, 300, 0, 'story_crackat');
+      num(g, 'Calm cracks', STORY, 'calmCracks', 1, 0, 40, 0, 'story_cracks');
+      num(g, 'Crack spread', STORY, 'crackSpread', 5, 20, 200, 0, 'story_crackspread');
+    });
+    // ---- void hazards (live) ----
+    sec('VOID HAZARDS · applies live', (g) => {
+      num(g, 'Pull radius', CFG, 'voidPullR', 10, 0, 800, 0, 'voidpullr');
+      num(g, 'Enemy pull accel', CFG, 'voidPullE', 10, 0, 2000, 0, 'voidpulle');
+      num(g, 'Player pull accel', CFG, 'voidPullP', 10, 0, 2000, 0, 'voidpullp');
+      num(g, 'Kill zone × voidR', CFG, 'voidKillK', 0.05, 0, 1.5, 2, 'voidkillk');
+      num(g, 'Web slow ×', CFG, 'webSlowK', 0.05, 0.1, 1, 2, 'webslowk');
+      num(g, 'Web lifetime', CFG, 'webLife', 1, 1, 60, 0, 'weblife');
+      num(g, 'Special void-foe ×', CFG, 'voidSpecialCh', 0.01, 0, 1, 2, 'voidspecialch');
+    });
+  } else if (devCat === 'enemy') {
+    // ---- spawning (live) ----
+    sec('SPAWNING · applies live', (g) => {
+      num(g, 'Max enemies', CFG, 'maxEnemies', 5, 1, 500, 0, 'maxenemies');
+      num(g, 'Spawn interval base (s)', CFG, 'spawnBase', 0.05, 0.05, 5, 2, 'spawnbase');
+      num(g, 'Interval shrink /s', CFG, 'spawnDecay', 0.0005, 0, 0.05, 4, 'spawndecay');
+      num(g, 'Spawn interval min (s)', CFG, 'spawnMin', 0.05, 0.05, 5, 2, 'spawnmin');
+      num(g, 'Batch +1 every (s)', CFG, 'batchEvery', 1, 5, 300, 0, 'batchevery');
+      num(g, 'Elite every (s)', CFG, 'eliteEvery', 1, 5, 600, 0, 'eliteevery');
+      num(g, 'First elite at (s)', CFG, 'firstElite', 1, 0, 600, 0, 'firstelite');
+      num(g, 'Boss every (s)', CFG, 'bossEvery', 5, 10, 1200, 0, 'bossevery');
+      num(g, 'First boss at (s)', CFG, 'firstBoss', 5, 0, 1200, 0, 'firstboss');
+    });
+    // ---- enemy scaling (live) ----
+    sec('ENEMY SCALING · applies live', (g) => {
+      num(g, 'HP doubles every (s)', CFG, 'hpRate', 1, 5, 900, 0, 'hprate');
+      num(g, 'Speed ramps over (s)', CFG, 'spdRate', 5, 20, 1800, 0, 'spdrate');
+      num(g, 'Speed growth cap', CFG, 'spdCap', 0.05, 0, 2, 2, 'spdCap');
+      num(g, 'Damage doubles every (s)', CFG, 'dmgRate', 5, 20, 1800, 0, 'dmgrate');
+    });
+    // ---- enemy types (new spawns) ----
+    b.appendChild(devSection('ENEMY TYPES · applies to newly spawned'));
+    Object.keys(ETYPES).forEach((t) => {
+      const dh = document.createElement('div');
+      dh.className = 'devtype';
+      dh.textContent = t.toUpperCase();
+      b.appendChild(dh);
+      const g = devGrid(); b.appendChild(g);
+      const E = ETYPES[t];
+      num(g, 'HP', E, 'hp', 1, 1, 9999, 0, 'et_hp');
+      num(g, 'Speed', E, 'spd', 5, 10, 1200, 0, 'et_spd');
+      num(g, 'Damage', E, 'dmg', 1, 0, 999, 0, 'et_dmg');
+      num(g, 'XP', E, 'xp', 1, 0, 500, 0, 'et_xp');
+      num(g, 'Score', E, 'score', 5, 0, 5000, 0, 'et_score');
+    });
+    // ---- drops (live) ----
+    sec('DROPS · applies live', (g) => {
+      num(g, 'Elite nuke chance', CFG, 'eliteNukeCh', 0.01, 0, 1, 2, 'elitenukech');
+      num(g, 'Elite heal chance', CFG, 'eliteHealCh', 0.01, 0, 1, 2, 'elitehealch');
+      num(g, 'Drop: drone', CFG, 'dropDroneCh', 0.001, 0, 1, 3, 'dropdronech');
+      num(g, 'Drop: force field', CFG, 'dropAegisCh', 0.001, 0, 1, 3, 'dropaegisch');
+      num(g, 'Drop: shield', CFG, 'dropShieldCh', 0.001, 0, 1, 3, 'dropshieldch');
+      num(g, 'Drop: nuke', CFG, 'dropNukeCh', 0.001, 0, 1, 3, 'dropnukech');
+      num(g, 'Drop: phase', CFG, 'dropPhaseCh', 0.001, 0, 1, 3, 'dropphasech');
+      num(g, 'Mult step/kill', CFG, 'multStep', 0.05, 0, 1, 2, 'multstep');
+      num(g, 'Mult cap', CFG, 'multCap', 0.5, 1, 20, 1, 'multcap');
+      num(g, 'Drone duration (s)', CFG, 'droneTime', 5, 5, 120, 0, 'dronetime');
+      num(g, 'Force field (s)', CFG, 'forceTime', 1, 1, 60, 0, 'forcetime');
+      num(g, 'Phase time (s)', CFG, 'phaseTime', 1, 1, 60, 0, 'phasetime');
+      num(g, 'Phase boom radius', CFG, 'phaseBoomR', 10, 50, 600, 0, 'phaseboomr');
+      num(g, 'Phase boom dmg vs boss', CFG, 'phaseBoomDmg', 100, 0, 9999, 0, 'phaseboomdmg');
+    });
+  } else {
+    // ---- ship: player base (next run) ----
+    sec('PLAYER BASE · applies on run start', (g) => {
+      num(g, 'Max hull', PBASE, 'hp', 5, 1, 5000, 0, 'pb_hp');
+      num(g, 'Move speed', PBASE, 'speed', 10, 50, 1500, 0, 'pb_speed');
+      num(g, 'Fire rate /s', PBASE, 'fireRate', 0.25, 0.5, 30, 2, 'pb_firerate');
+      num(g, 'Bullet damage', PBASE, 'dmg', 1, 1, 999, 0, 'pb_dmg');
+      num(g, 'Projectiles', PBASE, 'proj', 1, 1, 12, 0, 'pb_proj');
+      num(g, 'Pierce', PBASE, 'pierce', 1, 0, 12, 0, 'pb_pierce');
+      num(g, 'Bullet speed', PBASE, 'bulletSpeed', 20, 100, 4000, 0, 'pb_bulletspeed');
+      num(g, 'Magnet radius', PBASE, 'magnet', 5, 10, 900, 0, 'pb_magnet');
+      num(g, 'Homing stage', PBASE, 'seek', 1, 0, 5, 0, 'pb_seek');
+      num(g, 'Crit chance', PBASE, 'crit', 0.05, 0, 1, 2, 'pb_crit');
+      num(g, 'Starting nukes', PBASE, 'nukes', 1, 0, 9, 0, 'pb_nukes');
+      num(g, 'Starting shields', PBASE, 'shields', 1, 0, 9, 0, 'pb_shields');
+    });
+  }
 }
+
 
 function devResetAll() {
   DEVPARAMS.forEach((k) => { CFG[k] = CFG_DEFAULTS[k]; });
@@ -2925,7 +2982,10 @@ el.devrestart.addEventListener('click', () => {
 el.storepts.addEventListener('click', devShopTap);
 el.shopdevbtn.addEventListener('click', () => openDevHub('store'));
 el.shopdevback.addEventListener('click', backToHub);
-el.hubrun.addEventListener('click', openDev);
+el.hubgeneral.addEventListener('click', () => openDev('general'));
+el.hubvoid.addEventListener('click', () => openDev('void'));
+el.hubenemy.addEventListener('click', () => openDev('enemy'));
+el.hubship.addEventListener('click', () => openDev('ship'));
 el.hublive.addEventListener('click', openLiveOps);
 el.hubstore.addEventListener('click', () => {
   try {
