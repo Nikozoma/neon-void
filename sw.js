@@ -1,5 +1,5 @@
 /* Void Wars service worker — cache-first, offline capable */
-const CACHE = 'void-wars-v24';
+const CACHE = 'void-wars-v25';
 const ASSETS = [
   './',
   './index.html',
