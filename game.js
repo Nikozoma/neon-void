@@ -987,12 +987,19 @@ function spawnEnemy(type, x, y, elite, voidT) {
   const t = G.time;
   const loop = (G.story && G.story.phase !== 'off') ? (G.story.loop | 0) : 0;
   const hpM = CFG.hpMul(t) * (elite ? 5 : 1) * (voidT ? 1.45 : 1) * Math.pow(CFG.loopFoeHp, loop);
+  let foeHp = base.hp * hpM;
+  // Opening grace: before the voids open, beginner foes are always one-shot
+  // kills for the starting weapon, so a fresh run never opens on two-tap
+  // kills. Elites and post-rupture spawns keep their normal scaling.
+  if (!elite && (type === 'mite' || type === 'dasher') && G.story && G.story.phase === 'calm') {
+    foeHp = Math.min(foeHp, PBASE.dmg);
+  }
   const pos = (x === undefined) ? spawnRing() : { x, y };
   const e = {
     type, elite: !!elite, voidT: !!voidT,
     x: pos.x, y: pos.y,
     vx: 0, vy: 0,
-    hp: base.hp * hpM, maxhp: base.hp * hpM,
+    hp: foeHp, maxhp: foeHp,
     spd: base.spd * CFG.spdMul(t) * rand(0.9, 1.1) * (elite ? 0.9 : 1) * (voidT ? 1.08 : 1),
     dmg: base.dmg * CFG.dmgMul(t) * (elite ? 1.5 : 1) * Math.pow(CFG.loopFoeDmg, loop),
     r: base.r * (elite ? 1.55 : 1) * S + (elite ? 6 : 0),
