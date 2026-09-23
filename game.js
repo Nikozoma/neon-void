@@ -1,5 +1,5 @@
 /* ============================================================
-   NEON VOID — twin-stick neon arena survival
+   VOID WARS — twin-stick neon arena survival
    Single-file game. Canvas 2D. No dependencies.
    ============================================================ */
 'use strict';
@@ -4365,7 +4365,7 @@ function orientRefresh(reason) {
       orientSetGate('PAUSED', 'Landscape gameplay is paused.',
         'Turn your phone sideways to continue.');
     } else {
-      orientSetGate('TURN PHONE SIDEWAYS', 'Neon Void is built for landscape play.',
+      orientSetGate('TURN PHONE SIDEWAYS', 'Void Wars is built for landscape play.',
         'Turn your phone sideways to play.');
     }
     orientResetInput();
