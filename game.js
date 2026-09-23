@@ -428,7 +428,7 @@ const G = {
   best: 0,
 };
 
-try { G.best = parseInt(localStorage.getItem('neonvoid_best') || '0', 10) || 0; } catch (e) {}
+try { G.best = parseInt(localStorage.getItem('voidwars_best') || '0', 10) || 0; } catch (e) {}
 
 /* ============================================================
    META PROGRESSION — points + permanent store (localStorage)
@@ -454,8 +454,8 @@ function validSkillPool(pool) {
 }
 function saveMeta() {
   try {
-    localStorage.setItem('neonvoid_pts', String(META.pts));
-    localStorage.setItem('neonvoid_meta', JSON.stringify({
+    localStorage.setItem('voidwars_pts', String(META.pts));
+    localStorage.setItem('voidwars_meta', JSON.stringify({
       up: META.up, nukes: META.nukes, aegis: META.aegis,
       wlvl: META.wlvl, weapon: META.weapon,
       skillSlots: META.skillSlots, skillPool: META.skillPool,
@@ -512,8 +512,8 @@ function wmod(w, k, lvl) {
 /* init + load weapon levels (runs after WEAPONS is defined) */
 Object.keys(WEAPONS).forEach((id) => { META.wlvl[id] = id === 'pulse' ? 1 : 0; });
 try {
-  META.pts = parseInt(localStorage.getItem('neonvoid_pts') || '0', 10) || 0;
-  const m = JSON.parse(localStorage.getItem('neonvoid_meta') || 'null');
+  META.pts = parseInt(localStorage.getItem('voidwars_pts') || '0', 10) || 0;
+  const m = JSON.parse(localStorage.getItem('voidwars_meta') || 'null');
   if (m) {
     if (m.up) for (const k in META.up) META.up[k] = m.up[k] | 0;
     META.nukes = m.nukes | 0; META.aegis = m.aegis | 0;
@@ -1906,7 +1906,7 @@ function settleRun() {
   const isBest = G.score > G.best;
   if (isBest) {
     G.best = G.score;
-    try { localStorage.setItem('neonvoid_best', String(G.best)); } catch (e) {}
+    try { localStorage.setItem('voidwars_best', String(G.best)); } catch (e) {}
   }
   const earned = Math.floor(G.score / SHOP.ptsDiv);
   if (earned > 0) { META.pts += earned; saveMeta(); }
@@ -2221,7 +2221,7 @@ function renderEnemies() {
    Access: tap the tiny version badge on the main menu 7x.
    Taps 1-3 silent, tap 4/5/6 count down, tap 7 unlocks.
    ============================================================ */
-const DEV_KEY = 'neonvoid_dev';
+const DEV_KEY = 'voidwars_dev';
 let devTaps = 0, devTapLast = 0;
 
 function devLogoTap() {
@@ -2262,7 +2262,7 @@ function wipeAllData() {
   try {
     const dead = [];
     for (let i = 0; i < localStorage.length; i++) dead.push(localStorage.key(i));
-    dead.forEach((k) => { if (k && k.indexOf('neonvoid_') === 0) localStorage.removeItem(k); });
+    dead.forEach((k) => { if (k && (k.indexOf('voidwars_') === 0 || k.indexOf('neonvoid_') === 0)) localStorage.removeItem(k); });
   } catch (e) {}
   location.reload();
 }
@@ -2793,7 +2793,7 @@ function devResetAll() {
    Access: tap the ◈ points header in the store 7x.
    Same rhythm as the main dev unlock: silent on 1-3, countdown on 4-6, unlock on 7.
    ============================================================ */
-const SHOPDEV_KEY = 'neonvoid_shopdev';
+const SHOPDEV_KEY = 'voidwars_shopdev';
 let shopDevTaps = 0, shopDevTapLast = 0;
 
 function devShopTap() {
@@ -3227,7 +3227,7 @@ function storyExitToMenu() {
 
 /* ---------------- story badges (persisted) ---------------- */
 const BADGES = { sealed: 0, storm: 0 };
-const BADGE_KEY = 'neonvoid_badges';
+const BADGE_KEY = 'voidwars_badges';
 function saveBadges() {
   try { localStorage.setItem(BADGE_KEY, JSON.stringify(BADGES)); } catch (e) {}
 }
